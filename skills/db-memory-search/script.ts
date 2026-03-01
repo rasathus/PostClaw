@@ -2,6 +2,7 @@ import postgres from "npm:postgres";
 
 const OPENAI_BASE_URL = "http://10.51.51.145:1234/v1";
 const DB_URL = "postgres://openclaw:6599@localhost:5432/memorydb";
+const AGENT_ID = "openclaw-proto-1";
 
 async function getEmbedding(text: string): Promise<number[]> {
   const res = await fetch(`${OPENAI_BASE_URL}/embeddings`, {
@@ -18,32 +19,37 @@ async function searchMemory(query: string) {
   const sql = postgres(DB_URL);
   
   try {
-    // Hybrid search: Combines vector distance and text rank
-    const results = await sql`
-      WITH vector_search AS (
-        SELECT id, content, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS vector_score
-        FROM memory_semantic
-        WHERE agent_id = 'openclaw-proto-1'
-        ORDER BY embedding <=> ${JSON.stringify(embedding)}
-        LIMIT 10
-      ),
-      text_search AS (
-        SELECT id, content, ts_rank(fts_vector, websearch_to_tsquery('english', ${query})) AS text_score
-        FROM memory_semantic
-        WHERE agent_id = 'openclaw-proto-1' AND fts_vector @@ websearch_to_tsquery('english', ${query})
-      )
-      SELECT 
-        COALESCE(v.content, t.content) as content,
-        (COALESCE(v.vector_score, 0) * 0.7) + (COALESCE(t.text_score, 0) * 0.3) AS combined_score
-      FROM vector_search v
-      FULL OUTER JOIN text_search t ON v.id = t.id
-      ORDER BY combined_score DESC
-      LIMIT 5;
-    `;
-    
-    // Output only the raw concatenated text to save LLM context
-    const contextStr = results.map(r => r.content).join("\n---\n");
-    console.log(contextStr);
+    await sql.begin(async (tx: any) => {
+await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+      
+      const results = await tx`
+        WITH vector_search AS (
+          SELECT id, content, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS vector_score
+          FROM memory_semantic
+          WHERE is_archived = false
+          ORDER BY embedding <=> ${JSON.stringify(embedding)}
+          LIMIT 10
+        ),
+        text_search AS (
+          SELECT id, content, ts_rank(fts_vector, websearch_to_tsquery('simple', ${query})) AS text_score
+          FROM memory_semantic
+          WHERE is_archived = false AND fts_vector @@ websearch_to_tsquery('simple', ${query})
+        )
+        SELECT 
+          COALESCE(v.content, t.content) as content,
+          (COALESCE(v.vector_score, 0) * 0.7) + (COALESCE(t.text_score, 0) * 0.3) AS combined_score
+        FROM vector_search v
+        FULL OUTER JOIN text_search t ON v.id = t.id
+        ORDER BY combined_score DESC
+        LIMIT 5;
+      `;
+      
+      // Explicitly typing r as 'any' to fix the TS error
+      const contextStr = results.map((r: any) => r.content).join("\n---\n");
+      console.log(contextStr || "No memories found.");
+    });
+  } catch (err) {
+    console.error("Database Error:", err);
   } finally {
     await sql.end();
   }
