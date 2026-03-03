@@ -1,6 +1,6 @@
 {
-    "id": "openclaw-postgres",
-    "name": "OpenClaw Postgres Swarm",
+    "id": "postclaw",
+    "name": "PostClaw",
     "description": "PostgreSQL-backed RAG, memory, and persona management",
     "configSchema": {
         "type": "object",

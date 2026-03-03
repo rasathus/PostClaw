@@ -32,16 +32,22 @@ export async function searchPostgres(userText: string): Promise<string | null> {
           JOIN semantic_matches sm ON (e.source_memory_id = sm.id OR e.target_memory_id = sm.id)
           WHERE e.agent_id = ${AGENT_ID} AND m.id != sm.id AND m.is_archived = false
         )
-        SELECT id, content, similarity, 'Direct Match' as relation FROM semantic_matches
+        SELECT id, content, similarity, NULL as relationship_type FROM semantic_matches
         UNION ALL
-        SELECT id, content, similarity, 'Linked: ' || relationship_type as relation FROM linked_matches
+        SELECT id, content, similarity, relationship_type FROM linked_matches
         ORDER BY similarity DESC
         LIMIT 15;
       `;
 
       if (results.length > 0) {
         contextString = results
-          .map((r: any) => `[ID: ${r.id}] (${r.relation}) - ${r.content}`)
+          .map((r: any) => {
+            const pct = (r.similarity * 100).toFixed(1) + "%";
+            const label = r.relationship_type
+              ? `Linked: ${r.relationship_type}, ${pct}`
+              : pct;
+            return `[ID: ${r.id}] (${label}) - ${r.content}`;
+          })
           .join("\n");
       }
     });
@@ -121,31 +127,44 @@ export async function logEpisodicToolCall(
 /**
  * Fetch persona rules (core + situational) from agent_persona.
  */
-export async function fetchPersonaContext(embedding: number[]): Promise<string | null> {
+export async function fetchPersonaContext(embedding: number[] | null): Promise<string | null> {
   let personaContext: string | null = null;
 
   try {
     await sql.begin(async (tx: any) => {
       await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
 
-      const results = await tx`
-        WITH core_persona AS (
+      let results;
+
+      if (embedding) {
+        // Full fetch: core + situational (similarity-ranked)
+        results = await tx`
+          WITH core_persona AS (
+            SELECT category, content, 1.0 AS relevance_score
+            FROM agent_persona
+            WHERE is_always_active = true
+          ),
+          situational_persona AS (
+            SELECT category, content, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS relevance_score
+            FROM agent_persona
+            WHERE is_always_active = false
+            ORDER BY embedding <=> ${JSON.stringify(embedding)}
+            LIMIT 3
+          )
+          SELECT * FROM core_persona
+          UNION ALL
+          SELECT * FROM situational_persona
+          ORDER BY relevance_score DESC;
+        `;
+      } else {
+        // No embedding available (e.g. first prompt) — only core rules
+        results = await tx`
           SELECT category, content, 1.0 AS relevance_score
           FROM agent_persona
           WHERE is_always_active = true
-        ),
-        situational_persona AS (
-          SELECT category, content, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS relevance_score
-          FROM agent_persona
-          WHERE is_always_active = false
-          ORDER BY embedding <=> ${JSON.stringify(embedding)}
-          LIMIT 3
-        )
-        SELECT * FROM core_persona
-        UNION ALL
-        SELECT * FROM situational_persona
-        ORDER BY relevance_score DESC;
-      `;
+          ORDER BY category;
+        `;
+      }
 
       if (results.length > 0) {
         personaContext = results
