@@ -1,14 +1,19 @@
 import postgres from "postgres";
 import { createHash } from "node:crypto";
+import "dotenv/config";
 
 // =============================================================================
 // CONFIG
 // =============================================================================
 
-export const LM_STUDIO_URL = process.env.LM_STUDIO_URL ?? "http://10.51.51.145:1234";
-export const DB_URL = process.env.DB_URL ?? "postgres://openclaw:6599@localhost:5432/memorydb";
-export const AGENT_ID = process.env.AGENT_ID ?? "openclaw-proto-1";
-export const EMBEDDING_MODEL = "text-embedding-nomic-embed-text-v2-moe";
+export const LM_STUDIO_URL = process.env.LM_STUDIO_URL;
+export const DB_URL = process.env.DB_URL;
+export const AGENT_ID = process.env.AGENT_ID;
+export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "text-embedding-nomic-embed-text-v2-moe";
+
+if (!LM_STUDIO_URL || !DB_URL || !AGENT_ID) {
+  throw new Error("Missing required environment variables. Please check your .env file.");
+}
 
 // =============================================================================
 // DATABASE CLIENT

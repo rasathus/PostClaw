@@ -1,12 +1,9 @@
 import postgres from "npm:postgres";
+import { DB_URL, LM_STUDIO_URL, AGENT_ID } from "../PostClaw/db.ts";
 
 // =============================================================================
 // CONFIGURATION — All thresholds are easily tunable here
 // =============================================================================
-
-const LM_STUDIO_URL = "http://10.51.51.145:1234/v1";
-const DB_URL = "postgres://openclaw:6599@localhost:5432/memorydb";
-const AGENT_ID = Deno.env.get("AGENT_ID") || "openclaw-proto-1";
 
 // Phase 1: Episodic consolidation
 const EPISODIC_BATCH_LIMIT = 100;
@@ -48,7 +45,7 @@ interface LinkClassification {
 // =============================================================================
 
 async function getEmbedding(text: string): Promise<number[]> {
-  const res = await fetch(`${LM_STUDIO_URL}/embeddings`, {
+  const res = await fetch(`${LM_STUDIO_URL}/v1/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ input: text, model: "text-embedding-nomic-embed-text-v2-moe" }),
@@ -58,7 +55,7 @@ async function getEmbedding(text: string): Promise<number[]> {
 }
 
 async function callLLM(systemPrompt: string, userPrompt: string, temperature = 0.1): Promise<string> {
-  const res = await fetch(`${LM_STUDIO_URL}/chat/completions`, {
+  const res = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

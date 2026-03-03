@@ -1,10 +1,7 @@
 import postgres from "npm:postgres";
+import { DB_URL, LM_STUDIO_URL, AGENT_ID } from "../PostClaw/db.ts";
 
-const LM_STUDIO_URL = "http://10.51.51.145:1234/v1";
-const DB_URL = "postgres://openclaw:6599@localhost:5432/memorydb";
-const AGENT_ID = Deno.env.get("AGENT_ID") || "openclaw-proto-1";
-
-const sql = postgres(DB_URL);
+const sql = postgres(DB_URL!);
 
 interface PersonaChunk {
   category: string;
@@ -13,7 +10,7 @@ interface PersonaChunk {
 }
 
 async function getEmbedding(text: string): Promise<number[]> {
-  const res = await fetch(`${LM_STUDIO_URL}/embeddings`, {
+  const res = await fetch(`${LM_STUDIO_URL}/v1/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ input: text, model: "text-embedding-nomic-embed-text-v2-moe" }),
@@ -35,8 +32,8 @@ Each object must have:
 `;
 
   console.log(`[LLM] Asking local model to semantically chunk ${filename}...`);
-  
-  const res = await fetch(`${LM_STUDIO_URL}/chat/completions`, {
+
+  const res = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -51,7 +48,7 @@ Each object must have:
 
   const data = await res.json();
   let jsonString = data.choices[0].message.content.trim();
-  
+
   // NEW: Strip out the <think>...</think> chain-of-thought blocks
   jsonString = jsonString.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 
@@ -76,7 +73,7 @@ async function processAndStoreFile(filePath: string) {
   try {
     const markdownText = await Deno.readTextFile(filePath);
     const filename = filePath.split('/').pop() || "unknown.md";
-    
+
     // 1. Get the intelligent chunks from the LLM
     const chunks = await chunkMarkdownWithLLM(markdownText, filename);
     console.log(`[SUCCESS] Sliced ${filename} into ${chunks.length} semantic chunks.`);
@@ -85,10 +82,10 @@ async function processAndStoreFile(filePath: string) {
     for (const chunk of chunks) {
       console.log(`[DB] Generating embedding and storing category: "${chunk.category}"...`);
       const embedding = await getEmbedding(chunk.content);
-      
+
       await sql.begin(async (tx: any) => {
         await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
-        
+
         await tx`
           INSERT INTO agent_persona (
             agent_id, 
@@ -115,7 +112,7 @@ async function processAndStoreFile(filePath: string) {
       });
     }
     console.log(`[DONE] Finished bootstrapping ${filename} into Postgres!`);
-    
+
   } catch (err) {
     console.error("Bootstrap Error:", err);
   } finally {
