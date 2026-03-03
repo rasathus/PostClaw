@@ -26,49 +26,52 @@ async function getEmbedding(text: string): Promise<number[]> {
   return embedding;
 }
 
-async function searchPostgres(query: string): Promise<string | null> {
-  const embedding = await getEmbedding(query);
-  let retrievedContext: string | null = null;
-  
+async function searchPostgres(userText: string): Promise<string | null> {
+  let contextString: string | null = null;
   try {
+    const embedding = await getEmbedding(userText);
+    
     await sql.begin(async (tx: any) => {
       await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
       
+      // Step 1: Semantic Search + Graph Traversal
       const results = await tx`
-        WITH vector_search AS (
-          SELECT id, content, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS vector_score
+        WITH semantic_matches AS (
+          SELECT id, content, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS similarity
           FROM memory_semantic
-          WHERE is_archived = false
-          ORDER BY embedding <=> ${JSON.stringify(embedding)} LIMIT 5
+          WHERE agent_id = ${AGENT_ID} AND is_archived = false
+          ORDER BY similarity DESC
+          LIMIT 3
         ),
-        text_search AS (
-          SELECT id, content, ts_rank(fts_vector, websearch_to_tsquery('simple', ${query})) AS text_score
-          FROM memory_semantic 
-          WHERE is_archived = false AND fts_vector @@ websearch_to_tsquery('simple', ${query})
+        linked_matches AS (
+          SELECT m.id, m.content, 0.8 AS similarity, e.relationship_type, sm.id AS source_match_id
+          FROM entity_edges e
+          JOIN memory_semantic m ON (e.target_memory_id = m.id OR e.source_memory_id = m.id)
+          JOIN semantic_matches sm ON (e.source_memory_id = sm.id OR e.target_memory_id = sm.id)
+          WHERE e.agent_id = ${AGENT_ID} AND m.id != sm.id AND m.is_archived = false
         )
-        SELECT COALESCE(v.content, t.content) as content,
-               (COALESCE(v.vector_score, 0) * 0.7) + (COALESCE(t.text_score, 0) * 0.3) AS combined_score
-        FROM vector_search v
-        FULL OUTER JOIN text_search t ON v.id = t.id
-        ORDER BY combined_score DESC LIMIT 3;
+        SELECT id, content, similarity, 'Direct Match' as relation FROM semantic_matches
+        UNION ALL
+        SELECT id, content, similarity, 'Linked: ' || relationship_type as relation FROM linked_matches
+        ORDER BY similarity DESC
+        LIMIT 6;
       `;
 
       if (results.length > 0) {
-        retrievedContext = results.map((r: any) => r.content).join("\n");
-        console.log(`\n[DEBUG] --- Retrieved Database Memories ---`);
-        results.forEach((row: any, index: number) => {
-          console.log(`Rank ${index + 1} (Score: ${row.combined_score.toFixed(4)}): ${row.content}`);
-        });
+        // Step 2: Format the output WITH THE ID so the agent can reference them
+        contextString = results.map((r: any, i: number) => 
+          `[ID: ${r.id}] (${r.relation}) - ${r.content}`
+        ).join("\n");
+        
+        console.log(`\n[DEBUG] --- Retrieved Graph Memories ---`);
+        results.forEach((r: any) => console.log(`(${r.relation}): ${r.content.substring(0, 50)}...`));
         console.log(`[DEBUG] -----------------------------------`);
-      } else {
-        console.log(`[DEBUG] No relevant memories retrieved from database.`);
       }
     });
   } catch (err) {
-    console.error("[DEBUG] Database search failed:", err);
+    console.error("Postgres search error:", err);
   }
-
-  return retrievedContext;
+  return contextString;
 }
 
 async function fetchPersonaContext(embedding: number[]): Promise<string | null> {

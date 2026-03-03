@@ -50,14 +50,22 @@ export function prunePayload(body: any): any {
       You are equipped with a PostgreSQL vector database. Your context window is ephemeral.
       You MUST proactively save user preferences, architectural rules, and durable facts.
 
-      When saving a memory, you must decide its access scope:
-      - "private": Only you can see it (use for agent-specific state or scratchpad notes).
-      - "global": All other agents in the swarm can see it (use for universal rules, server IPs, and user preferences).
+      CRITICAL: Memory retrieval is AUTOMATIC. Whenever the user speaks, relevant memories are seamlessly injected into your prompt. DO NOT attempt to write commands to "search", "query", or "recall" memories.
 
-      To save a memory, use your \`exec\` tool to run this exact command:
+      When SAVING a NEW memory, use your \`exec\` tool to run:
       deno run --allow-net --allow-env /home/cl/.openclaw/workspace/skills/db-memory-store/script.ts "${agentId}" "<private|global>" "<exact_text_to_remember>"
       `;
     sysPrompt += memoryRules;
+
+    const memoryLinkRules = `
+      ## Memory Linking
+
+      When you identify a relationship between two memories (e.g., "A caused B", "A is a type of B", "A is located at B"), you MUST link them.
+
+      To link two memories, use your \`exec\` tool to run:
+      deno run --allow-net --allow-env /home/cl/.openclaw/workspace/skills/db-memory-link/script.ts "${agentId}" "<source_memory_id>" "<target_memory_id>" "<relationship_type>"
+      `;
+    sysPrompt += memoryLinkRules;
 
     const denoLocation = `
       ## Deno Location
