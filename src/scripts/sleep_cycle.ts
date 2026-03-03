@@ -69,7 +69,7 @@ Do not use markdown formatting.
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "unsloth/qwen3.5-35b-a3b",
+        model: "qwen3.5-9b",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: `Here is the recent episodic transcript to analyze:\n\n${transcript}` }

@@ -40,7 +40,7 @@ Each object must have:
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "unsloth/qwen3.5-35b-a3b", // Targeting your specific local model
+      model: "qwen3.5-9b", // Targeting your specific local model
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: `Here is the file to chunk:\n\n${markdownText}` }

@@ -9,6 +9,7 @@ const AGENT_ID = "openclaw-proto-1";
 const sql = postgres(DB_URL);
 
 const processedEvents = new Set<string>();
+// let globalWatermark: string | null = null;
 
 async function getEmbedding(text: string): Promise<number[]> {
   const res = await fetch(`${LM_STUDIO_URL}/v1/embeddings`, {
@@ -205,23 +206,122 @@ async function logEpisodicToolCalls(messages: any[]) {
   }
 }
 
+// async function getLatestCheckpoint(): Promise<any> {
+//   try {
+//     const result = await sql.begin(async (tx: any) => {
+//       await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+//       return await tx`
+//         SELECT summary, active_tasks 
+//         FROM conversation_checkpoints 
+//         WHERE agent_id = ${AGENT_ID} AND session_id = 'active-session'
+//         ORDER BY created_at DESC LIMIT 1
+//       `;
+//     });
+//     return result.length > 0 ? result[0] : null;
+//   } catch (e) {
+//     console.error("[CHECKPOINT] Fetch error:", e);
+//     return null;
+//   }
+// }
+
+// async function createAndStoreCheckpoint(messagesToCompress: any[], previousSummary: string | null) {
+//   console.log(`[CHECKPOINT] Synthesizing ${messagesToCompress.length} old messages...`);
+  
+//   // 1. Format the old messages into a raw transcript
+//   let transcript = messagesToCompress.map(m => {
+//     const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+//     return `[${m.role.toUpperCase()}]: ${content}`;
+//   }).join('\n\n');
+
+//   // 2. Prevent blowing out the summarizer's context window (~6000 tokens max)
+//   const MAX_CHARS = 20000; 
+//   if (transcript.length > MAX_CHARS) {
+//      console.log(`[CHECKPOINT] Transcript too long (${transcript.length} chars). Truncating older parts to fit context window...`);
+//      transcript = "... [EARLIER MESSAGES TRUNCATED FOR COMPRESSION SIZE] ...\n\n" + transcript.slice(-MAX_CHARS);
+//   }
+
+//   const systemPrompt = `
+// You are the cognitive compression engine for an AI assistant. 
+// Your task is to summarize the provided conversation transcript to save context space.
+// ${previousSummary ? `Here is the summary of the conversation BEFORE this transcript: "${previousSummary}"\nMerge this older context with the new transcript.` : ''}
+
+// Focus strictly on:
+// 1. The user's core goals.
+// 2. Important decisions made or facts established.
+// 3. Tasks that are currently active or pending.
+
+// Output EXCLUSIVELY as a raw JSON object:
+// {
+//   "summary": "A dense, highly detailed narrative summary of the state of the conversation.",
+//   "active_tasks": {"task_1": "status", "task_2": "status"}
+// }
+// Do not use markdown wrappers.
+// `;
+
+//   try {
+//     // Ensure the /v1/ is always present for LM Studio's OpenAI compatibility
+//     const baseUrl = LM_STUDIO_URL.replace(/\/v1\/?$/, ''); 
+//     const endpoint = `${baseUrl}/v1/chat/completions`;
+
+//     const res = await fetch(endpoint, {
+//       method: "POST",
+//       headers: { "Content-Type": "application/json" },
+//       body: JSON.stringify({
+//         model: "qwen3.5-9b", 
+//         messages: [
+//           { role: "system", content: systemPrompt },
+//           { role: "user", content: `Transcript:\n\n${transcript}` }
+//         ],
+//         temperature: 0.1,
+//       }),
+//     });
+
+//     const data = await res.json();
+
+//     // 3. Graceful Error Handling
+//     if (!res.ok || !data.choices || !data.choices[0]) {
+//       console.error("[CHECKPOINT] LLM API Error during compression:", JSON.stringify(data));
+//       return; 
+//     }
+
+//     let jsonString = data.choices[0].message.content.trim();
+
+//     // Strip reasoning blocks and formatting
+//     jsonString = jsonString.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+//     if (jsonString.startsWith("```json")) jsonString = jsonString.replace(/^```json\n/, "").replace(/\n```$/, "");
+//     if (jsonString.startsWith("```")) jsonString = jsonString.replace(/^```\n/, "").replace(/\n```$/, "");
+
+//     const parsed = JSON.parse(jsonString);
+
+//     await sql.begin(async (tx: any) => {
+//       await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+//       await tx`
+//         INSERT INTO conversation_checkpoints (agent_id, session_id, summary, active_tasks)
+//         VALUES (${AGENT_ID}, 'active-session', ${parsed.summary}, ${JSON.stringify(parsed.active_tasks)})
+//       `;
+//     });
+//     console.log(`[CHECKPOINT] Compression complete and saved to database.`);
+//   } catch (e) {
+//     console.error("[CHECKPOINT] Failed to create checkpoint:", e);
+//   }
+// }
+
 Deno.serve({ port: 8000, hostname: "0.0.0.0" }, async (req) => {
   const url = new URL(req.url);
   
   if (req.method === "POST" && url.pathname.includes("/chat/completions")) {
     let body = await req.json();
     
-    // ====================================================================
-    // NEW: Prune the payload before doing anything else
+    // 1. Prune the payload (strip heavy tools and default boilerplate)
     body = prunePayload(body);
-    // ====================================================================
 
     const lastUserIndex = body.messages.findLastIndex((m: any) => m.role === "user");
-    
+    let userText = "";
+    let isCompaction = false;
+    let isHeartbeat = false;
+
     if (lastUserIndex !== -1) {
       const lastMessage = body.messages[lastUserIndex];
-      let userText = "";
-
       if (typeof lastMessage.content === "string") {
         userText = lastMessage.content;
       } else if (Array.isArray(lastMessage.content)) {
@@ -231,42 +331,54 @@ Deno.serve({ port: 8000, hostname: "0.0.0.0" }, async (req) => {
           .join(" ");
       }
 
-      if (userText.trim() !== "") {
+      isHeartbeat = userText.toLowerCase().includes("heartbeat") || userText.toLowerCase().includes("cron");
+      isCompaction = userText.includes("<conversation>") && userText.includes("Create a structured context checkpoint summary");
+
+      // ====================================================================
+      // ROUTE A: COMPACTION RESCUE (Help OpenClaw's native compactor succeed)
+      // ====================================================================
+      if (isCompaction) {
         console.log(`\n==================================================`);
-        console.log(`[REQUEST] Intercepted user message: "${userText}"`);
+        console.log(`[COMPACTION RESCUE] Intercepted OpenClaw's native compaction prompt.`);
         
-        // Strip the [Day YYYY-MM-DD HH:MM UTC] prefix for a purer semantic vector
+        // Truncate the massive transcript so LM Studio doesn't choke and crash
+        const convoRegex = /<conversation>([\s\S]*?)<\/conversation>/;
+        const match = userText.match(convoRegex);
+        if (match && match[1].length > 20000) {
+          const truncated = "\n... [EARLIER HISTORY TRUNCATED TO FIT VRAM] ...\n" + match[1].slice(-20000);
+          const newContent = userText.replace(match[1], truncated);
+          
+          if (typeof lastMessage.content === "string") {
+            body.messages[lastUserIndex].content = newContent;
+          } else {
+            body.messages[lastUserIndex].content[0].text = newContent;
+          }
+          console.log(`[COMPACTION RESCUE] Sliced massive transcript down to safe size.`);
+        }
+      } 
+      // ====================================================================
+      // ROUTE B: NORMAL CHAT (Inject RAG and Log Memories)
+      // ====================================================================
+      else if (userText.trim() !== "") {
+        console.log(`\n==================================================`);
+        console.log(`[REQUEST] Intercepted user message: "${userText.substring(0, 100)}..."`);
+        
         const cleanText = userText.replace(/^\[.*?\]\s*/, "");
-        
-        // 1. Generate the embedding using the CLEAN text
         const embedding = await getEmbedding(cleanText);
         
-        // ====================================================================
-        // NEW: SILENT OBSERVER
-        // ====================================================================
-        const isHeartbeat = userText.toLowerCase().includes("heartbeat") || userText.toLowerCase().includes("cron");
-        
         if (!isHeartbeat) {
-          // Fire-and-forget logging for the User's prompt
-          logEpisodicMemory(userText, embedding, "user_prompt");
+          logEpisodicMemory(cleanText, embedding, "user_prompt");
         }
-
-        // Fire-and-forget scanning for the Assistant's recent tool calls
         logEpisodicToolCalls(body.messages);
-        // ====================================================================
         
-        // 2. Fetch Memories, Persona, and Tools concurrently
         const [memoryContext, personaContext, dynamicTools] = await Promise.all([
-          searchPostgres(userText), 
+          searchPostgres(cleanText), 
           fetchPersonaContext(embedding),
-          fetchDynamicTools(embedding) // NEW
+          fetchDynamicTools(embedding)
         ]);
         
-        // 3. Inject Situational Memories into the User Message
         if (memoryContext) {
-          console.log("\n[INJECTION] Injecting memory context directly into the user's prompt...");
           const injectionString = `[SYSTEM RAG CONTEXT]\nThe following historical memories were retrieved from the database. Use them to help answer the user's query if they are relevant:\n\n${memoryContext}\n\n[END CONTEXT]\n\n`;
-
           if (typeof lastMessage.content === "string") {
             body.messages[lastUserIndex].content = injectionString + lastMessage.content;
           } else if (Array.isArray(lastMessage.content)) {
@@ -274,21 +386,40 @@ Deno.serve({ port: 8000, hostname: "0.0.0.0" }, async (req) => {
           }
         }
 
-        // 4. Inject the Identity into the System Prompt
         if (personaContext) {
           const systemIndex = body.messages.findIndex((m: any) => m.role === "system");
           if (systemIndex !== -1) {
-             console.log("\n[INJECTION] Injecting dynamic database persona into the system prompt...");
              const identityString = `\n\n## Dynamic Database Persona\nThe following core operational rules were loaded from your database:\n${personaContext}\n`;
              body.messages[systemIndex].content += identityString;
           }
         }
 
-        // NEW: Inject Dynamic Tools
         if (dynamicTools.length > 0 && body.tools) {
            body.tools.push(...dynamicTools);
         }
       }
+    }
+
+    // ====================================================================
+    // STATELESS CONTEXT CLIPPER (Keep normal chats lightning fast)
+    // ====================================================================
+    const MAX_MESSAGES = 12;
+    if (!isCompaction && body.messages.length > MAX_MESSAGES) {
+       const sysMsg = body.messages[0];
+       
+       // Walk backwards to find the 4th most recent user message
+       // This guarantees we never sever a tool-call loop
+       let userMsgCount = 0;
+       let cutIndex = 1;
+       for (let i = body.messages.length - 1; i > 0; i--) {
+          if (body.messages[i].role === "user") userMsgCount++;
+          if (userMsgCount === 4) {
+             cutIndex = i;
+             break;
+          }
+       }
+       body.messages = [sysMsg, ...body.messages.slice(cutIndex)];
+       console.log(`[CLIPPER] Dropped old history. Payload trimmed to ${body.messages.length} messages.`);
     }
 
     try {
@@ -296,7 +427,6 @@ Deno.serve({ port: 8000, hostname: "0.0.0.0" }, async (req) => {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const logFile = `debug_logs/prompt_dump_${timestamp}.json`;
       await Deno.writeTextFile(logFile, JSON.stringify(body, null, 2));
-      console.log(`[DEBUG] Successfully dumped pruned prompt payload to: ${logFile}`);
     } catch (e) {
       console.error("[DEBUG] Failed to write prompt debug log:", e);
     }
