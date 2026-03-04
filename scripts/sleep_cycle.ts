@@ -34,22 +34,22 @@ import {
 // =============================================================================
 
 // Phase 1: Episodic consolidation
-const EPISODIC_BATCH_LIMIT = 100;
+const DEFAULT_EPISODIC_BATCH_LIMIT = 100;
 
 // Phase 2: Duplicate detection
-const DUPLICATE_SIMILARITY_THRESHOLD = 0.80;
-const DUPLICATE_SCAN_LIMIT = 200;
+const DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD = 0.80;
+const DEFAULT_DUPLICATE_SCAN_LIMIT = 200;
 
 // Phase 3: Low-value cleanup
-const LOW_VALUE_AGE_DAYS = 7;
-const LOW_VALUE_PROTECTED_TIERS = ['permanent', 'stable'];
+const DEFAULT_LOW_VALUE_AGE_DAYS = 7;
+const DEFAULT_LOW_VALUE_PROTECTED_TIERS = ['permanent', 'stable'];
 
 // Phase 4: Link discovery
-const LINK_SIMILARITY_MIN = 0.65;
-const LINK_SIMILARITY_MAX = 0.92;
-const LINK_CANDIDATES_PER_MEMORY = 5;
-const LINK_BATCH_SIZE = 20;
-const LINK_SCAN_LIMIT = 50;
+const DEFAULT_LINK_SIMILARITY_MIN = 0.65;
+const DEFAULT_LINK_SIMILARITY_MAX = 0.92;
+const DEFAULT_LINK_CANDIDATES_PER_MEMORY = 5;
+const DEFAULT_LINK_BATCH_SIZE = 20;
+const DEFAULT_LINK_SCAN_LIMIT = 50;
 
 // Background service
 const DEFAULT_INTERVAL_HOURS = 6;
@@ -62,6 +62,18 @@ const DEFAULT_INTERVAL_HOURS = 6;
 
 export interface SleepCycleOptions {
   agentId?: string;
+  config?: {
+    episodicBatchLimit?: number;
+    duplicateSimilarityThreshold?: number;
+    duplicateScanLimit?: number;
+    lowValueAgeDays?: number;
+    lowValueProtectedTiers?: string[];
+    linkSimilarityMin?: number;
+    linkSimilarityMax?: number;
+    linkCandidatesPerMemory?: number;
+    linkBatchSize?: number;
+    linkScanLimit?: number;
+  };
 }
 
 export interface SleepCycleStats {
@@ -81,7 +93,7 @@ export interface SleepCycleStats {
 // PHASE 1: EPISODIC CONSOLIDATION
 // =============================================================================
 
-async function phaseConsolidateEpisodic(agentId: string): Promise<number> {
+async function phaseConsolidateEpisodic(agentId: string, limit: number): Promise<number> {
   console.log(`\n[PHASE 1] Episodic Memory Consolidation`);
   console.log(`─────────────────────────────────────────`);
 
@@ -94,7 +106,7 @@ async function phaseConsolidateEpisodic(agentId: string): Promise<number> {
       FROM memory_episodic
       WHERE agent_id = ${agentId} AND is_archived = false
       ORDER BY created_at ASC
-      LIMIT ${EPISODIC_BATCH_LIMIT};
+      LIMIT ${limit};
     `;
   });
 
@@ -169,10 +181,10 @@ Do not use markdown formatting.
 // PHASE 2: DUPLICATE DETECTION & MERGE
 // =============================================================================
 
-async function phaseDuplicateDetection(agentId: string): Promise<number> {
+async function phaseDuplicateDetection(agentId: string, options: { threshold: number; scanLimit: number }): Promise<number> {
   console.log(`\n[PHASE 2] Duplicate Detection & Merge`);
   console.log(`─────────────────────────────────────────`);
-  console.log(`[PHASE 2] Similarity threshold: ${DUPLICATE_SIMILARITY_THRESHOLD}`);
+  console.log(`[PHASE 2] Similarity threshold: ${options.threshold}`);
 
   const sql = getSql();
 
@@ -183,7 +195,7 @@ async function phaseDuplicateDetection(agentId: string): Promise<number> {
       FROM memory_semantic
       WHERE agent_id = ${agentId} AND is_archived = false
       ORDER BY created_at DESC
-      LIMIT ${DUPLICATE_SCAN_LIMIT};
+      LIMIT ${options.scanLimit};
     `;
   });
 
@@ -210,7 +222,7 @@ async function phaseDuplicateDetection(agentId: string): Promise<number> {
         WHERE agent_id = ${agentId}
           AND is_archived = false
           AND id != ${source.id}
-          AND 1 - (embedding <=> ${source.embedding}) > ${DUPLICATE_SIMILARITY_THRESHOLD}
+          AND 1 - (embedding <=> ${source.embedding}) > ${options.threshold}
         ORDER BY usefulness_score DESC, access_count DESC
         LIMIT 10;
       `;
@@ -252,10 +264,10 @@ async function phaseDuplicateDetection(agentId: string): Promise<number> {
 // PHASE 3: LOW-VALUE ENTRY CLEANUP
 // =============================================================================
 
-async function phaseLowValueCleanup(agentId: string): Promise<number> {
+async function phaseLowValueCleanup(agentId: string, options: { ageDays: number; protectedTiers: string[] }): Promise<number> {
   console.log(`\n[PHASE 3] Low-Value Entry Cleanup`);
   console.log(`─────────────────────────────────────────`);
-  console.log(`[PHASE 3] Archiving memories with 0 access older than ${LOW_VALUE_AGE_DAYS} days (protecting: ${LOW_VALUE_PROTECTED_TIERS.join(', ')})`);
+  console.log(`[PHASE 3] Archiving memories with 0 access older than ${options.ageDays} days (protecting: ${options.protectedTiers.join(', ')})`);
 
   const sql = getSql();
 
@@ -268,8 +280,8 @@ async function phaseLowValueCleanup(agentId: string): Promise<number> {
       WHERE agent_id = ${agentId}
         AND is_archived = false
         AND access_count = 0
-        AND created_at < NOW() - INTERVAL '1 day' * ${LOW_VALUE_AGE_DAYS}
-        AND tier NOT IN ('permanent', 'stable')
+        AND created_at < NOW() - INTERVAL '1 day' * ${options.ageDays}
+        AND tier NOT IN ${sql(options.protectedTiers)}
       ORDER BY created_at ASC;
     `;
 
@@ -299,10 +311,10 @@ async function phaseLowValueCleanup(agentId: string): Promise<number> {
 // PHASE 4: LINK CANDIDATE DISCOVERY & AUTO-LINKING
 // =============================================================================
 
-async function phaseLinkDiscovery(agentId: string): Promise<number> {
+async function phaseLinkDiscovery(agentId: string, options: { min: number; max: number; candidatesPerMemory: number; batchSize: number; scanLimit: number }): Promise<number> {
   console.log(`\n[PHASE 4] Link Candidate Discovery & Auto-Linking`);
   console.log(`─────────────────────────────────────────`);
-  console.log(`[PHASE 4] Similarity range: ${LINK_SIMILARITY_MIN}–${LINK_SIMILARITY_MAX}`);
+  console.log(`[PHASE 4] Similarity range: ${options.min}–${options.max}`);
 
   const sql = getSql();
 
@@ -313,7 +325,7 @@ async function phaseLinkDiscovery(agentId: string): Promise<number> {
       FROM memory_semantic
       WHERE agent_id = ${agentId} AND is_archived = false
       ORDER BY created_at DESC
-      LIMIT ${LINK_SCAN_LIMIT};
+      LIMIT ${options.scanLimit};
     `;
   });
 
@@ -345,7 +357,7 @@ async function phaseLinkDiscovery(agentId: string): Promise<number> {
         WHERE m.agent_id = ${agentId}
           AND m.is_archived = false
           AND m.id != ${source.id}
-          AND 1 - (m.embedding <=> ${source.embedding}) BETWEEN ${LINK_SIMILARITY_MIN} AND ${LINK_SIMILARITY_MAX}
+          AND 1 - (m.embedding <=> ${source.embedding}) BETWEEN ${options.min} AND ${options.max}
           AND NOT EXISTS (
             SELECT 1 FROM entity_edges e
             WHERE e.agent_id = ${agentId}
@@ -355,8 +367,8 @@ async function phaseLinkDiscovery(agentId: string): Promise<number> {
               )
           )
         ORDER BY similarity DESC
-        LIMIT ${LINK_CANDIDATES_PER_MEMORY};
-      `;
+        LIMIT ${options.candidatesPerMemory};
+    `;
 
       for (const candidate of candidates) {
         const pairKey = [source.id, candidate.id].sort().join(":");
@@ -383,8 +395,8 @@ async function phaseLinkDiscovery(agentId: string): Promise<number> {
 
   let linksCreated = 0;
 
-  for (let i = 0; i < candidatePairs.length; i += LINK_BATCH_SIZE) {
-    const batch = candidatePairs.slice(i, i + LINK_BATCH_SIZE);
+  for (let i = 0; i < candidatePairs.length; i += options.batchSize) {
+    const batch = candidatePairs.slice(i, i + options.batchSize);
 
     const pairsDescription = batch
       .map((p, idx) => `${idx + 1}. [A: ${p.source_id}] "${p.source_content}"\n   [B: ${p.target_id}] "${p.target_content}" (similarity: ${(p.similarity * 100).toFixed(1)}%)`)
@@ -415,7 +427,7 @@ Do not use markdown formatting.
     try {
       classifications = z.array(LinkClassificationSchema).parse(JSON.parse(jsonString));
     } catch {
-      console.error(`[PHASE 4] Failed to parse LLM response for batch ${Math.floor(i / LINK_BATCH_SIZE) + 1}. Skipping.`);
+      console.error(`[PHASE 4] Failed to parse LLM response for batch ${Math.floor(i / options.batchSize) + 1}. Skipping.`);
       continue;
     }
 
@@ -466,10 +478,22 @@ export async function runSleepCycle(opts: SleepCycleOptions = {}): Promise<Sleep
   };
 
   try {
-    stats.factsExtracted = await phaseConsolidateEpisodic(agentId);
-    stats.duplicatesMerged = await phaseDuplicateDetection(agentId);
-    stats.staleArchived = await phaseLowValueCleanup(agentId);
-    stats.linksCreated = await phaseLinkDiscovery(agentId);
+    stats.factsExtracted = await phaseConsolidateEpisodic(agentId, opts.config?.episodicBatchLimit ?? DEFAULT_EPISODIC_BATCH_LIMIT);
+    stats.duplicatesMerged = await phaseDuplicateDetection(agentId, {
+      threshold: opts.config?.duplicateSimilarityThreshold ?? DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD,
+      scanLimit: opts.config?.duplicateScanLimit ?? DEFAULT_DUPLICATE_SCAN_LIMIT
+    });
+    stats.staleArchived = await phaseLowValueCleanup(agentId, {
+      ageDays: opts.config?.lowValueAgeDays ?? DEFAULT_LOW_VALUE_AGE_DAYS,
+      protectedTiers: opts.config?.lowValueProtectedTiers ?? DEFAULT_LOW_VALUE_PROTECTED_TIERS
+    });
+    stats.linksCreated = await phaseLinkDiscovery(agentId, {
+      min: opts.config?.linkSimilarityMin ?? DEFAULT_LINK_SIMILARITY_MIN,
+      max: opts.config?.linkSimilarityMax ?? DEFAULT_LINK_SIMILARITY_MAX,
+      candidatesPerMemory: opts.config?.linkCandidatesPerMemory ?? DEFAULT_LINK_CANDIDATES_PER_MEMORY,
+      batchSize: opts.config?.linkBatchSize ?? DEFAULT_LINK_BATCH_SIZE,
+      scanLimit: opts.config?.linkScanLimit ?? DEFAULT_LINK_SCAN_LIMIT
+    });
 
     console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     console.log(`  Sleep Cycle Complete 💤`);

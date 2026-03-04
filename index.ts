@@ -3,11 +3,13 @@
 // =============================================================================
 
 export { getSql, LM_STUDIO_URL, POSTCLAW_DB_URL, EMBEDDING_MODEL, getEmbedding, hashContent, setEmbeddingConfig, setDbUrl } from "./services/db.js";
-export { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, fetchDynamicTools, storeMemory, updateMemory, linkMemories, storeTool } from "./services/memoryService.js";
-export type { ChatCompletionTool } from "./services/memoryService.js";
+export { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, storeMemory, updateMemory, linkMemories } from "./services/memoryService.js";
+export { listPersonas, getPersona, createPersona, updatePersona, deletePersona } from "./services/personaService.js";
 
 import { getSql } from "./services/db.js";
 import { stopService } from "./scripts/sleep_cycle.js";
+import { stopDashboard } from "./dashboard/server.js";
+import { listPersonas, getPersona, createPersona, updatePersona, deletePersona } from "./services/personaService.js";
 import {
   type ChatMessage,
   type ContentPart,
@@ -29,24 +31,24 @@ export type { ChatMessage, ContentPart, ToolCallRecord } from "./schemas/validat
 // =============================================================================
 
 const processedEvents = new Set<string>();
-const MAX_CACHE_SIZE = 1000;
 
-/** Cache last message from message_received (fires before before_prompt_build). */
-let lastReceivedMessage: string = "";
+import { getCurrentConfig, loadConfig } from "./services/config.js";
 
 function isDuplicate(key: string): boolean {
+  const maxCacheSize = getCurrentConfig().dedup.maxCacheSize;
   if (processedEvents.has(key)) return true;
   processedEvents.add(key);
-  if (processedEvents.size > MAX_CACHE_SIZE) processedEvents.clear();
+  if (processedEvents.size > maxCacheSize) processedEvents.clear();
   return false;
 }
+let lastReceivedMessage: string = "";
 
 // =============================================================================
 // HELPERS
 // =============================================================================
 
 import { getEmbedding, setEmbeddingConfig, setDbUrl } from "./services/db.js";
-import { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, fetchDynamicTools, storeMemory, updateMemory, linkMemories, storeTool } from "./services/memoryService.js";
+import { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, storeMemory, updateMemory, linkMemories } from "./services/memoryService.js";
 import { Type } from "@sinclair/typebox";
 /**
  * Extracts the text content from the last user message in a messages array.
@@ -91,6 +93,14 @@ const openclawPostgresPlugin = {
     const llmModel = memoryConfig?.remote?.model || memoryConfig?.model || "text-embedding-nomic-embed-text-v2-moe";
     setEmbeddingConfig(llmUrl, llmModel);
 
+    const agentId = "main";
+    const workspaceDir = api.config?.workspaceDir;
+    ensureAgent(agentId, workspaceDir).then(() => {
+      loadConfig(agentId).then(() => {
+        console.log("[PostClaw] Configuration loaded successfully");
+      });
+    });
+
     // -------------------------------------------------------------------------
     // before_prompt_build — Prune + replace system prompt, inject RAG context
     //
@@ -123,7 +133,7 @@ const openclawPostgresPlugin = {
           const isHeartbeat = provider === "heartbeat" || provider === "cron";
 
           // Lazy-register the agent if not already in the DB
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
 
           console.log(`[PostClaw] before_prompt_build: "${cleanText.substring(0, 80)}..." (heartbeat=${isHeartbeat}, provider=${provider})`);
 
@@ -152,28 +162,17 @@ const openclawPostgresPlugin = {
           // ==================================================================
           // STEP 2: Inject custom memory architecture rules
           // ==================================================================
+          const config = await loadConfig(agentId);
 
-          sysPrompt += `
-            ## Memory & Knowledge Management
-            You are a stateful agent. Your context window is ephemeral but your PostgreSQL memory is permanent.
-            Silently manage your knowledge — never ask permission to save, link, or update facts.
-
-            - **Retrieval:** Relevant memories (with UUID tags) are auto-injected.
-            - **Search:** Use the \`memory_search\` tool when you need to recall facts not in the current context.
-            - **Correct/update facts:** Use the \`memory_update\` tool when a fact is incorrect, outdated, or needs to be updated. When using memory_update, ALWAYS assign an appropriate 'tier' and 'category'.
-            - **Save new facts:** Use the \`memory_store\` tool when a new fact is learned. When using memory_store, ALWAYS assign an appropriate 'tier' (e.g., 'permanent' for core user identity, 'daily' for current tasks) and 'category'.
-            - **Link related memories:** Use the \`memory_link\` tool when two memories are related.
-            - **Store a tool:** Use the \`tool_store\` tool when a new tool schema is learned.
-            - **Sleep cycle** (consolidates short-term memory): \`deno run -A /home/cl/.openclaw/workspace/scripts/sleep_cycle.ts "${agentId}"\`
-            - **Always Reply**: ALWAYS conclude your turn with a direct response to the user.
-            `;
-
-          sysPrompt += `
-            ## Autonomous Heartbeats
-            OpenClaw provides a native heartbeat loop — never use Linux crontab.
-            To schedule background tasks, add a checklist to: /home/cl/.openclaw/workspace/HEARTBEAT.md
-            On heartbeat poll: read that file. If no pending tasks, reply with ONLY: HEARTBEAT_OK
-            `;
+          for (const [key, promptValue] of Object.entries(config.prompts)) {
+            // Special case for heartbeat
+            if (key === 'heartbeatRules') {
+               const heartbeatPrompt = promptValue.replace("{{heartbeatFilePath}}", config.prompts.heartbeatFilePath || "/home/cl/.openclaw/workspace/HEARTBEAT.md");
+               sysPrompt += `\n\n${heartbeatPrompt}\n`;
+            } else if (key !== 'heartbeatFilePath') {
+               sysPrompt += `\n\n${promptValue}\n`;
+            }
+          }
 
           // ==================================================================
           // STEP 3: Fetch persona + RAG context from Postgres (in parallel)
@@ -186,9 +185,15 @@ const openclawPostgresPlugin = {
 
             const [memoryContext, personaContext] = await Promise.all([
               // RAG: only when we have user text to search against
-              hasUserText ? searchPostgres(agentId, cleanText) : Promise.resolve(null),
+              hasUserText ? searchPostgres(agentId, cleanText, {
+                semanticLimit: config.rag.semanticLimit,
+                linkedSimilarity: config.rag.linkedSimilarity,
+                totalLimit: config.rag.totalLimit
+              }) : Promise.resolve(null),
               // Persona: always fetch (core rules work without embedding)
-              fetchPersonaContext(agentId, embedding),
+              fetchPersonaContext(agentId, embedding, {
+                situationalLimit: config.persona.situationalLimit
+              }),
             ]);
 
             // Persona context → append to the pruned system prompt
@@ -240,10 +245,15 @@ const openclawPostgresPlugin = {
         parameters: Type.Object({
           query: Type.String({ description: "Natural language search query" }),
         }),
-        async execute(_toolCallId: string, args: { query: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: { query: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
-          const result = await searchPostgres(agentId, args.query);
+          await ensureAgent(agentId, ctx?.workspaceDir);
+          const config = getCurrentConfig();
+          const result = await searchPostgres(agentId, args.query, {
+            semanticLimit: config.rag.semanticLimit,
+            linkedSimilarity: config.rag.linkedSimilarity,
+            totalLimit: config.rag.totalLimit
+          });
           return result || "No memories found matching that query.";
         },
       },
@@ -263,9 +273,9 @@ const openclawPostgresPlugin = {
           tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily" })),
           metadata: Type.Optional(Type.Any({ description: "A JSON object of additional contextual key-value pairs" }))
         }),
-        async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx?.workspaceDir);
           const { content, scope, ...options } = args;
           const result = await storeMemory(agentId, content, scope, options);
           return JSON.stringify(result);
@@ -287,9 +297,9 @@ const openclawPostgresPlugin = {
           tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily" })),
           metadata: Type.Optional(Type.Any({ description: "A JSON object of additional contextual key-value pairs" }))
         }),
-        async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx?.workspaceDir);
           const { old_memory_id, new_fact, ...options } = args;
           const result = await updateMemory(agentId, old_memory_id, new_fact, options);
           return JSON.stringify(result);
@@ -308,9 +318,9 @@ const openclawPostgresPlugin = {
           target_id: Type.String({ description: "UUID of the target memory" }),
           relationship: Type.String({ description: "Relationship type (e.g. related_to, elaborates, contradicts, depends_on, part_of)" }),
         }),
-        async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx?.workspaceDir);
           const result = await linkMemories(agentId, args.source_id, args.target_id, args.relationship);
           return JSON.stringify(result);
         },
@@ -318,24 +328,78 @@ const openclawPostgresPlugin = {
       { names: ["memory_link"] },
     );
 
-    // --- tool_store: Store or update a tool schema definition ---
+    // --- persona_list: List all persona entries ---
     api.registerTool(
       {
-        name: "tool_store",
-        description: "Store or update a tool definition in the environment context database, so it can be dynamically loaded for future conversations.",
-        parameters: Type.Object({
-          tool_name: Type.String({ description: "Unique name for the tool" }),
-          tool_json: Type.String({ description: "Full JSON schema definition of the tool" }),
-          scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { description: "Visibility scope. Default: private", default: "private" })),
-        }),
-        async execute(_toolCallId: string, args: { tool_name: string; tool_json: string; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        name: "persona_list",
+        description: "List all persona rules for the current agent.",
+        parameters: Type.Object({}),
+        async execute(_toolCallId: string, _args: Record<string, never>, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
-          const result = await storeTool(agentId, args.tool_name, args.tool_json, args.scope);
-          return JSON.stringify(result);
+          await ensureAgent(agentId, ctx?.workspaceDir);
+          const personas = await listPersonas(agentId);
+          return JSON.stringify(personas);
         },
       },
-      { names: ["tool_store"] },
+      { names: ["persona_list"] },
+    );
+
+    // --- persona_get: Get a specific persona entry ---
+    api.registerTool(
+      {
+        name: "persona_get",
+        description: "Get a specific persona rule by its UUID.",
+        parameters: Type.Object({
+          persona_id: Type.String({ description: "UUID of the persona entry" }),
+        }),
+        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
+          const agentId = ctx?.agentId || "main";
+          await ensureAgent(agentId, ctx?.workspaceDir);
+          const persona = await getPersona(agentId, args.persona_id);
+          return persona ? JSON.stringify(persona) : "Persona not found.";
+        },
+      },
+      { names: ["persona_get"] },
+    );
+
+    // --- persona_update: Update a persona entry ---
+    api.registerTool(
+      {
+        name: "persona_update",
+        description: "Update an existing persona rule. You can change the category, content, or whether it is always active.",
+        parameters: Type.Object({
+          persona_id: Type.String({ description: "UUID of the persona entry to update" }),
+          category: Type.Optional(Type.String({ description: "New category name" })),
+          content: Type.Optional(Type.String({ description: "New content text" })),
+          is_always_active: Type.Optional(Type.Boolean({ description: "Whether this rule is always injected" })),
+        }),
+        async execute(_toolCallId: string, args: { persona_id: string; category?: string; content?: string; is_always_active?: boolean }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
+          const agentId = ctx?.agentId || "main";
+          await ensureAgent(agentId, ctx?.workspaceDir);
+          const { persona_id, ...updates } = args;
+          const result = await updatePersona(agentId, persona_id, updates);
+          return result ? JSON.stringify(result) : "Persona not found.";
+        },
+      },
+      { names: ["persona_update"] },
+    );
+
+    // --- persona_delete: Delete a persona entry ---
+    api.registerTool(
+      {
+        name: "persona_delete",
+        description: "Delete a persona rule by its UUID.",
+        parameters: Type.Object({
+          persona_id: Type.String({ description: "UUID of the persona entry to delete" }),
+        }),
+        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
+          const agentId = ctx?.agentId || "main";
+          await ensureAgent(agentId, ctx?.workspaceDir);
+          const deleted = await deletePersona(agentId, args.persona_id);
+          return deleted ? '{"status": "deleted"}' : "Persona not found.";
+        },
+      },
+      { names: ["persona_delete"] },
     );
 
     // -------------------------------------------------------------------------
@@ -355,7 +419,7 @@ const openclawPostgresPlugin = {
           const isHeartbeat = provider === "heartbeat" || provider === "cron";
 
           // Lazy-register the agent if not already in the DB
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
 
           console.log(`[PostClaw] agent_end: ${messages.length} messages, success=${event.success}, provider=${provider}`);
 
@@ -555,6 +619,28 @@ const openclawPostgresPlugin = {
             stopService();
             await getSql().end();
           });
+        postclaw
+          .command("dashboard")
+          .description("Start the dashboard server standalone")
+          .option("--port <port>", "Port to listen on (default: 3333)")
+          .option("--bind <address>", "Bind address (default: 127.0.0.1)")
+          .action(async (opts: { port?: string; bind?: string }) => {
+            const pluginCfg = api.config?.plugins?.entries?.postclaw?.config;
+            if (pluginCfg?.dbUrl) {
+              setDbUrl(pluginCfg.dbUrl);
+            }
+            const memCfg = api.config?.agents?.defaults?.memorySearch;
+            const llmUrl = memCfg?.remote?.baseUrl || "http://127.0.0.1:1234/v1";
+            const embModel = memCfg?.remote?.model || memCfg?.model || "text-embedding-nomic-embed-text-v2-moe";
+            setEmbeddingConfig(llmUrl, embModel);
+
+            const { startDashboard } = await import("./dashboard/server.js");
+            startDashboard({
+              port: opts.port ? parseInt(opts.port, 10) : undefined,
+              bindAddress: opts.bind,
+            });
+            console.log("[PostClaw] Dashboard running. Press Ctrl+C to stop.");
+          });
       },
       { commands: ["postclaw"] },
     );
@@ -566,12 +652,29 @@ const openclawPostgresPlugin = {
     if (sleepIntervalHours !== 0) {
       // Start the background sleep cycle service (0 = disabled)
       import("./scripts/sleep_cycle.js").then(({ startService }) => {
+        const config = getCurrentConfig();
         startService({
           agentId: "main",
           intervalHours: sleepIntervalHours || 6,
+          config: config.sleep
         });
       }).catch((err) => {
         console.error("[PostClaw] Failed to start sleep service:", err);
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BACKGROUND SERVICE — Optional dashboard server
+    // ─────────────────────────────────────────────────────────────────────────
+    const dashboardEnabled = pluginConfig?.dashboardEnabled;
+    if (dashboardEnabled) {
+      import("./dashboard/server.js").then(({ startDashboard }) => {
+        startDashboard({
+          port: pluginConfig?.dashboardPort,
+          bindAddress: pluginConfig?.dashboardBindAddress,
+        });
+      }).catch((err) => {
+        console.error("[PostClaw] Failed to start dashboard:", err);
       });
     }
 
@@ -597,6 +700,8 @@ if (require.main === module) {
   // Graceful shutdown
   process.on("SIGINT", async () => {
     console.log("\nShutting down...");
+    stopService();
+    stopDashboard();
     await getSql().end();
     process.exit(0);
   });

@@ -19,6 +19,29 @@
             "sleepIntervalHours": {
                 "type": "number",
                 "description": "Hours between background sleep cycles (default: 6, set to 0 to disable)"
+            },
+            "dashboardEnabled": {
+                "type": "boolean",
+                "description": "Enable the PostClaw web dashboard (default: false)"
+            },
+            "dashboardPort": {
+                "type": "number",
+                "description": "Port for the dashboard server (default: 3333)"
+            },
+            "dashboardBindAddress": {
+                "type": "string",
+                "description": "Address for the dashboard to bind to (e.g., '127.0.0.1' or '0.0.0.0' for all interfaces).",
+                "default": "127.0.0.1"
+            },
+            "ragSemanticLimit": {
+                "type": "integer",
+                "description": "Number of direct semantic matches to fetch during RAG.",
+                "default": 7
+            },
+            "ragTotalLimit": {
+                "type": "integer",
+                "description": "Total number of memories (semantic + linked) to inject into prompt.",
+                "default": 15
             }
         }
     },

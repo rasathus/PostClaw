@@ -15,16 +15,18 @@ import {
 
 const registeredAgents = new Set<string>();
 
-/**
- * Ensure the given agentId exists in the agents table.
- * Uses an in-memory cache so we only hit the DB once per agent per process lifetime.
- */
-export async function ensureAgent(agentId: string): Promise<void> {
-  if (!agentId || registeredAgents.has(agentId)) return;
+export async function ensureAgent(agentId: string, workspaceDir?: string): Promise<void> {
+  if (!agentId) return;
   try {
-    await getSql()`INSERT INTO agents (id, name) VALUES (${agentId}, ${agentId}) ON CONFLICT DO NOTHING`;
+    const sql = getSql();
+    await sql`
+      INSERT INTO agents (id, name, workspace_dir) 
+      VALUES (${agentId}, ${agentId}, ${workspaceDir || null}) 
+      ON CONFLICT (id) DO UPDATE SET 
+        workspace_dir = EXCLUDED.workspace_dir
+      WHERE EXCLUDED.workspace_dir IS NOT NULL
+    `;
     registeredAgents.add(agentId);
-    console.log(`[AGENTS] Registered agent: ${agentId}`);
   } catch (err) {
     console.error(`[AGENTS] Failed to register agent ${agentId}:`, err);
   }
@@ -38,8 +40,15 @@ export async function ensureAgent(agentId: string): Promise<void> {
  * Semantic search + graph traversal against memory_semantic + entity_edges.
  * Returns formatted context string or null if no results found.
  */
-export async function searchPostgres(agentId: string, userText: string): Promise<string | null> {
+export async function searchPostgres(
+  agentId: string, 
+  userText: string, 
+  options: { semanticLimit?: number; linkedSimilarity?: number; totalLimit?: number } = {}
+): Promise<string | null> {
   let contextString: string | null = null;
+  const semanticLimit = options.semanticLimit ?? 7;
+  const linkedSimilarity = options.linkedSimilarity ?? 0.8;
+  const totalLimit = options.totalLimit ?? 15;
 
   try {
     const embedding = await getEmbedding(userText);
@@ -55,10 +64,10 @@ export async function searchPostgres(agentId: string, userText: string): Promise
           FROM memory_semantic
           WHERE agent_id = ${agentId} AND is_archived = false
           ORDER BY similarity DESC
-          LIMIT 7
+          LIMIT ${semanticLimit}
         ),
         linked_matches AS (
-          SELECT m.id, m.content, 0.8 AS similarity, e.relationship_type, sm.id AS source_match_id
+          SELECT m.id, m.content, ${linkedSimilarity}::float8 AS similarity, e.relationship_type, sm.id AS source_match_id
           FROM entity_edges e
           JOIN memory_semantic m ON (e.target_memory_id = m.id OR e.source_memory_id = m.id)
           JOIN semantic_matches sm ON (e.source_memory_id = sm.id OR e.target_memory_id = sm.id)
@@ -69,7 +78,7 @@ export async function searchPostgres(agentId: string, userText: string): Promise
           UNION ALL
           SELECT id, content, similarity, relationship_type FROM linked_matches
           ORDER BY similarity DESC
-          LIMIT 15
+          LIMIT ${totalLimit}
         )
         SELECT * FROM final_matches;
       `;
@@ -186,8 +195,13 @@ export async function logEpisodicToolCall(agentId: string,
 /**
  * Fetch persona rules (core + situational) from agent_persona.
  */
-export async function fetchPersonaContext(agentId: string, embedding: number[] | null): Promise<string | null> {
+export async function fetchPersonaContext(
+  agentId: string, 
+  embedding: number[] | null,
+  options: { situationalLimit?: number } = {}
+): Promise<string | null> {
   let personaContext: string | null = null;
+  const situationalLimit = options.situationalLimit ?? 3;
 
   try {
     await getSql().begin(async (tx: any) => {
@@ -208,7 +222,7 @@ export async function fetchPersonaContext(agentId: string, embedding: number[] |
             FROM agent_persona
             WHERE is_always_active = false
             ORDER BY embedding <=> ${JSON.stringify(embedding)}
-            LIMIT 3
+            LIMIT ${situationalLimit}
           )
           SELECT * FROM core_persona
           UNION ALL
@@ -236,43 +250,6 @@ export async function fetchPersonaContext(agentId: string, embedding: number[] |
   }
 
   return personaContext;
-}
-
-// =============================================================================
-// DYNAMIC TOOLS
-// =============================================================================
-
-// ChatCompletionTool type is now imported from schemas/validation.ts
-export type { ChatCompletionTool } from "../schemas/validation.js";
-
-/**
- * Fetch dynamic tools from context_environment based on embedding similarity.
- */
-export async function fetchDynamicTools(agentId: string, embedding: number[]): Promise<ChatCompletionTool[]> {
-  let dynamicTools: ChatCompletionTool[] = [];
-
-  try {
-    await getSql().begin(async (tx: any) => {
-      await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
-
-      const results = await tx`
-        SELECT tool_name, context_data, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS similarity
-        FROM context_environment
-        WHERE 1 - (embedding <=> ${JSON.stringify(embedding)}) > 0.35
-        ORDER BY similarity DESC
-        LIMIT 3;
-      `;
-
-      if (results.length > 0) {
-        dynamicTools = results.map((r: { context_data: string }) => JSON.parse(r.context_data) as ChatCompletionTool);
-        console.log(`[TOOLS] 🔧 Loaded ${dynamicTools.length} dynamic tool(s): ${dynamicTools.map(t => t.function.name).join(", ")}`);
-      }
-    });
-  } catch (err) {
-    console.error("[TOOLS] Failed to fetch dynamic tools:", err);
-  }
-
-  return dynamicTools;
 }
 
 // =============================================================================
@@ -421,44 +398,3 @@ export async function linkMemories(agentId: string,
   }
 }
 
-// =============================================================================
-// TOOL STORE (replaces db-tool-store skill)
-// =============================================================================
-
-/**
- * Store or update a tool definition in context_environment.
- */
-export async function storeTool(agentId: string,
-  toolName: string,
-  toolJson: string,
-  scope: "private" | "shared" | "global" = "private"
-): Promise<{ status: string }> {
-  try {
-    const toolObj = JSON.parse(toolJson);
-    const description = toolObj.function?.description || toolObj.description || "";
-    const embedText = `${toolName}: ${description}`;
-    const embedding = await getEmbedding(embedText);
-
-    await getSql().begin(async (tx: any) => {
-      await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
-
-      await tx`
-        INSERT INTO context_environment (
-          agent_id, access_scope, tool_name, context_data, embedding
-        ) VALUES (
-          ${agentId}, ${scope}, ${toolName}, ${toolJson}, ${JSON.stringify(embedding)}
-        )
-        ON CONFLICT (agent_id, tool_name) DO UPDATE SET
-          context_data = EXCLUDED.context_data,
-          embedding = EXCLUDED.embedding,
-          access_scope = EXCLUDED.access_scope;
-      `;
-    });
-
-    console.log(`[TOOLS] Stored/updated tool schema: ${toolName}`);
-    return { status: "stored" };
-  } catch (err) {
-    console.error("[TOOLS] Failed to store tool:", err);
-    return { status: `error: ${err}` };
-  }
-}

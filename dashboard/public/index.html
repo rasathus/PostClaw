@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PostClaw Dashboard</title>
+  <meta name="description" content="PostClaw — PostgreSQL memory, persona, and knowledge graph management dashboard" />
+
+  <!-- AmbientCSS -->
+  <link rel="stylesheet" href="/vendor/ambient/ambient.css" />
+
+  <!-- D3.js for knowledge graph -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <!-- Custom styles -->
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="amb-light-tl">
+  <!-- Header -->
+  <header class="dashboard-header ambient amb-surface-darker amb-chamfer amb-elevation-2">
+    <div class="header-content">
+      <h1>🦐 PostClaw</h1>
+      <div class="header-controls">
+        <label for="agent-select">Agent:</label>
+        <select id="agent-select" class="ambient amb-surface amb-fillet amb-elevation-1">
+          <option value="main">main</option>
+        </select>
+      </div>
+    </div>
+  </header>
+
+  <!-- Tab Navigation -->
+  <nav class="tab-nav ambient amb-surface amb-chamfer amb-elevation-1">
+    <button class="tab-btn active" data-tab="personas">🎭 Personas</button>
+    <button class="tab-btn" data-tab="memories">🧠 Memories</button>
+    <button class="tab-btn" data-tab="graph">🕸️ Graph</button>
+    <button class="tab-btn" data-tab="scripts">⚡ Scripts</button>
+    <button class="tab-btn" data-tab="config">⚙️ Config</button>
+  </nav>
+
+  <!-- Tab Panels -->
+  <main class="tab-panels">
+
+    <!-- ============== PERSONAS TAB ============== -->
+    <section id="tab-personas" class="tab-panel active">
+      <div class="panel-header">
+        <h2>Persona Manager</h2>
+        <button id="btn-new-persona" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-cyan">
+          + New Persona
+        </button>
+      </div>
+
+      <!-- Create/Edit form (hidden by default) -->
+      <div id="persona-form" class="form-card ambient amb-surface amb-fillet amb-elevation-2" style="display:none;">
+        <input type="hidden" id="persona-form-id" />
+        <div class="form-row">
+          <label for="persona-category">Category</label>
+          <input id="persona-category" type="text" placeholder="e.g., communication_style" maxlength="50"
+                 class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+        </div>
+        <div class="form-row">
+          <label for="persona-content">Content</label>
+          <textarea id="persona-content" rows="4" placeholder="Persona rule or instruction..."
+                    class="ambient amb-surface-darker amb-fillet amb-elevation-0"></textarea>
+        </div>
+        <div class="form-row form-row-inline">
+          <label>
+            <input id="persona-always-active" type="checkbox" /> Always Active (injected every prompt)
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="btn-save-persona" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-green">
+            Save
+          </button>
+          <button id="btn-cancel-persona" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">
+            Cancel
+          </button>
+        </div>
+      </div>
+
+      <div id="persona-list" class="data-table-container"></div>
+
+      <!-- Workspace files panel -->
+      <div class="panel-section">
+        <h3>📄 Workspace Files</h3>
+        <p class="hint">View .md files from the OpenClaw workspace for copy+paste into persona entries.</p>
+        <div id="workspace-files" class="workspace-files"></div>
+        <pre id="workspace-content" class="workspace-content ambient amb-surface-darker amb-fillet amb-elevation-0" style="display:none;"></pre>
+      </div>
+    </section>
+
+    <!-- ============== MEMORIES TAB ============== -->
+    <section id="tab-memories" class="tab-panel">
+      <div class="panel-header">
+        <h2>Memory Manager</h2>
+        <button id="btn-new-memory" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-cyan">
+          + New Memory
+        </button>
+        <button id="btn-import-memory" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">
+          📥 Import
+        </button>
+      </div>
+
+      <!-- Filters -->
+      <div class="filters ambient amb-surface amb-fillet amb-elevation-1">
+        <input id="memory-search" type="text" placeholder="Search memories..."
+               class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+        <select id="memory-tier-filter" class="ambient amb-surface-darker amb-fillet amb-elevation-0">
+          <option value="">All Tiers</option>
+          <option value="permanent">Permanent</option>
+          <option value="stable">Stable</option>
+          <option value="daily">Daily</option>
+          <option value="session">Session</option>
+          <option value="volatile">Volatile</option>
+        </select>
+        <select id="memory-archived-filter" class="ambient amb-surface-darker amb-fillet amb-elevation-0">
+          <option value="false">Active</option>
+          <option value="true">Archived</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+
+      <!-- Memory form -->
+      <div id="memory-form" class="form-card ambient amb-surface amb-fillet amb-elevation-2" style="display:none;">
+        <input type="hidden" id="memory-form-id" />
+        <div class="form-row">
+          <label for="memory-content">Content</label>
+          <textarea id="memory-content" rows="3" placeholder="Memory content..."
+                    class="ambient amb-surface-darker amb-fillet amb-elevation-0"></textarea>
+        </div>
+        <div class="form-row form-row-grid">
+          <div>
+            <label for="memory-category">Category</label>
+            <input id="memory-category" type="text" placeholder="e.g., preference"
+                   class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-tier">Tier</label>
+            <select id="memory-tier" class="ambient amb-surface-darker amb-fillet amb-elevation-0">
+              <option value="daily">Daily</option>
+              <option value="stable">Stable</option>
+              <option value="permanent">Permanent</option>
+              <option value="session">Session</option>
+              <option value="volatile">Volatile</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="btn-save-memory" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-green">Save</button>
+          <button id="btn-cancel-memory" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Import form -->
+      <div id="import-form" class="form-card ambient amb-surface amb-fillet amb-elevation-2" style="display:none;">
+        <div class="form-row">
+          <label for="import-content">Markdown Content</label>
+          <textarea id="import-content" rows="8" placeholder="Paste markdown content here..."
+                    class="ambient amb-surface-darker amb-fillet amb-elevation-0"></textarea>
+        </div>
+        <div class="form-row">
+          <label for="import-filename">Source Filename (optional)</label>
+          <input id="import-filename" type="text" placeholder="e.g., memory.md"
+                 class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+        </div>
+        <div class="form-actions">
+          <button id="btn-run-import" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-amber">
+            Import
+          </button>
+          <button id="btn-cancel-import" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">Cancel</button>
+        </div>
+      </div>
+
+      <div id="memory-list" class="data-table-container"></div>
+      <div id="memory-pagination" class="pagination"></div>
+    </section>
+
+    <!-- ============== GRAPH TAB ============== -->
+    <section id="tab-graph" class="tab-panel">
+      <div class="panel-header">
+        <h2>Knowledge Graph</h2>
+        <div class="graph-controls">
+          <button id="btn-fit-graph" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">
+            📐 Fit
+          </button>
+          <button id="btn-toggle-labels" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">
+            🏷️ Labels On
+          </button>
+          <button id="btn-refresh-graph" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">
+            🔄 Refresh
+          </button>
+        </div>
+      </div>
+      <div class="graph-wrapper">
+        <div id="graph-container" class="graph-container ambient amb-surface-darker amb-fillet amb-elevation-2">
+          <svg id="graph-svg"></svg>
+          <div id="graph-legend" class="graph-legend"></div>
+        </div>
+        <div id="graph-info" class="graph-info ambient amb-surface amb-fillet amb-elevation-1">
+          <span id="graph-stats">Scroll to zoom • Drag to pan • Click a node for details</span>
+        </div>
+        <div id="graph-detail" class="graph-detail-panel ambient amb-surface amb-chamfer amb-elevation-2" style="display:none;"></div>
+      </div>
+    </section>
+
+    <!-- ============== SCRIPTS TAB ============== -->
+    <section id="tab-scripts" class="tab-panel">
+      <div class="panel-header">
+        <h2>Run Scripts</h2>
+      </div>
+      <div class="scripts-grid">
+        <div class="script-card ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>💤 Sleep Cycle</h3>
+          <p>Run knowledge graph maintenance: episodic consolidation, duplicate detection, low-value cleanup, and link discovery.</p>
+          <button id="btn-run-sleep" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-blue">
+            Run Sleep Cycle
+          </button>
+          <div id="sleep-status" class="script-status"></div>
+        </div>
+        <div class="script-card ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>🎭 Persona Import</h3>
+          <p>Bootstrap a Markdown persona file into the agent_persona table.</p>
+          <div class="form-row">
+            <input id="persona-import-file" type="text" placeholder="/path/to/SOUL.md"
+                   class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+          </div>
+          <button id="btn-run-persona-import" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-amber">
+            Import Persona
+          </button>
+          <div id="persona-import-status" class="script-status"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============== CONFIG TAB ============== -->
+    <section id="tab-config" class="tab-panel">
+      <div class="panel-header">
+        <h2>Plugin Configuration</h2>
+        <div class="header-actions">
+          <button id="btn-reset-config" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">
+            Reset to Defaults
+          </button>
+          <button id="btn-save-config" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-green">
+            Save All Settings
+          </button>
+        </div>
+      </div>
+
+      <div class="config-grid">
+        <!-- RAG Settings -->
+        <div class="config-card ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>🔍 RAG & Search</h3>
+          <p class="hint">Fine-tune how memories are retrieved and injected into prompts.</p>
+          <div class="form-row">
+            <label for="cfg-rag-semantic-limit">Semantic Matches (Direct)</label>
+            <input id="cfg-rag-semantic-limit" type="number" min="1" max="50" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Number of direct vector matches to fetch.</small>
+          </div>
+          <div class="form-row">
+            <label for="cfg-rag-total-limit">Total Matches (Final)</label>
+            <input id="cfg-rag-total-limit" type="number" min="1" max="100" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Max memories after adding linked results.</small>
+          </div>
+          <div class="form-row">
+            <label for="cfg-rag-linked-similarity">Linked Similarity Floor</label>
+            <input id="cfg-rag-linked-similarity" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Boosted similarity score given to linked (traversed) memories.</small>
+          </div>
+        </div>
+
+        <!-- Persona -->
+        <div class="config-card ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>🎭 Persona</h3>
+          <p class="hint">Control situational context injection.</p>
+          <div class="form-row">
+            <label for="cfg-persona-situational-limit">Situational Persona Limit</label>
+            <input id="cfg-persona-situational-limit" type="number" min="1" max="20" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Number of similarity-ranked persona facts to inject.</small>
+          </div>
+        </div>
+
+        <!-- System Prompt Templates -->
+        <div class="config-card config-card-full ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>📝 System Prompt Templates</h3>
+          <p class="hint">These blocks are injected into the agent's system prompt. Changes take effect on the next user message.</p>
+          <div class="form-row">
+            <label for="cfg-prompt-memory">Memory Management Rules</label>
+            <textarea id="cfg-prompt-memory" rows="8" class="ambient amb-surface-darker amb-fillet amb-elevation-0 code-font"></textarea>
+          </div>
+          <div class="form-row">
+            <label for="cfg-prompt-persona">Persona Management Rules</label>
+            <textarea id="cfg-prompt-persona" rows="6" class="ambient amb-surface-darker amb-fillet amb-elevation-0 code-font"></textarea>
+          </div>
+          <div class="form-row">
+            <label for="cfg-prompt-heartbeat">Heartbeat / Autonomous Rules</label>
+            <textarea id="cfg-prompt-heartbeat" rows="6" class="ambient amb-surface-darker amb-fillet amb-elevation-0 code-font"></textarea>
+            <small>Use {{heartbeatFilePath}} as a placeholder for the path below.</small>
+          </div>
+          <div class="form-row">
+            <label for="cfg-prompt-heartbeat-path">Heartbeat File Path</label>
+            <input id="cfg-prompt-heartbeat-path" type="text" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+          </div>
+        </div>
+
+        <!-- Sleep Cycle -->
+        <div class="config-card config-card-full ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>💤 Sleep & Maintenance</h3>
+          <p class="hint">Adjust the thresholds for background knowledge graph optimization.</p>
+          <div class="form-row-grid">
+            <div class="form-row">
+              <label for="cfg-sleep-dedup-threshold">Dedup Similarity</label>
+              <input id="cfg-sleep-dedup-threshold" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+              <small>Merge memories > this similarity (Default 0.80).</small>
+            </div>
+            <div class="form-row">
+              <label for="cfg-sleep-low-value-age">Cleanup Age (Days)</label>
+              <input id="cfg-sleep-low-value-age" type="number" min="1" max="365" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+              <small>Archive unused memories older than this.</small>
+            </div>
+            <div class="form-row">
+              <label for="cfg-sleep-link-min">Link Min Similarity</label>
+              <input id="cfg-sleep-link-min" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            </div>
+            <div class="form-row">
+              <label for="cfg-sleep-link-max">Link Max Similarity</label>
+              <input id="cfg-sleep-link-max" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Other -->
+        <div class="config-card ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>🛠️ Technical</h3>
+          <div class="form-row">
+            <label for="cfg-dedup-cache">Event Cache Size</label>
+            <input id="cfg-dedup-cache" type="number" min="100" max="10000" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Number of event IDs to store to prevent double-processing.</small>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

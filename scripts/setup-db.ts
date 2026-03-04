@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS agents (
     default_embedding_model VARCHAR(100) DEFAULT 'nomic-embed-text-v2-moe',
     embedding_dimensions INT DEFAULT 768,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT true
+    is_active BOOLEAN DEFAULT true,
+    workspace_dir VARCHAR(512)
 );
 
 CREATE TABLE IF NOT EXISTS agent_persona (
@@ -107,15 +108,13 @@ CREATE TABLE IF NOT EXISTS agent_persona (
     UNIQUE(agent_id, category)
 );
 
-CREATE TABLE IF NOT EXISTS context_environment (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+CREATE TABLE IF NOT EXISTS plugin_config (
     agent_id VARCHAR(100) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    access_scope access_scope_enum DEFAULT 'private',
-    tool_name VARCHAR(100) NOT NULL,
-    context_data TEXT NOT NULL,
-    embedding vector,
+    config_key VARCHAR(100) NOT NULL,
+    config_value JSONB NOT NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(agent_id, tool_name)
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_id, config_key)
 );
 
 CREATE TABLE IF NOT EXISTS memory_semantic (
@@ -203,10 +202,10 @@ CREATE TRIGGER trg_immutable_persona_owner
 BEFORE UPDATE ON agent_persona
 FOR EACH ROW EXECUTE FUNCTION enforce_immutable_ownership();
 
-DROP TRIGGER IF EXISTS trg_immutable_context_owner ON context_environment;
-CREATE TRIGGER trg_immutable_context_owner
-BEFORE UPDATE ON context_environment
-FOR EACH ROW EXECUTE FUNCTION enforce_immutable_ownership();
+DROP TRIGGER IF EXISTS trg_config_modtime ON plugin_config;
+CREATE TRIGGER trg_config_modtime
+BEFORE UPDATE ON plugin_config
+FOR EACH ROW EXECUTE FUNCTION update_modified_column();
 
 -- 6. Indices
 CREATE INDEX IF NOT EXISTS idx_mem_sem_agent_tier ON memory_semantic(agent_id, tier, is_archived);
@@ -228,7 +227,7 @@ CREATE INDEX IF NOT EXISTS idx_mem_sem_superseded ON memory_semantic(superseded_
 ALTER TABLE memory_semantic ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memory_episodic ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agent_persona ENABLE ROW LEVEL SECURITY;
-ALTER TABLE context_environment ENABLE ROW LEVEL SECURITY;
+ALTER TABLE plugin_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE entity_edges ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversation_checkpoints ENABLE ROW LEVEL SECURITY;
 
@@ -269,22 +268,22 @@ DROP POLICY IF EXISTS persona_delete ON agent_persona;
 CREATE POLICY persona_delete ON agent_persona FOR DELETE
     USING (agent_id = current_setting('app.current_agent_id', true));
 
--- context_environment
-DROP POLICY IF EXISTS context_read ON context_environment;
-CREATE POLICY context_read ON context_environment FOR SELECT
-    USING (agent_id = current_setting('app.current_agent_id', true) OR access_scope IN ('shared', 'global'));
+-- plugin_config
+DROP POLICY IF EXISTS config_read ON plugin_config;
+CREATE POLICY config_read ON plugin_config FOR SELECT
+    USING (agent_id = current_setting('app.current_agent_id', true));
 
-DROP POLICY IF EXISTS context_insert ON context_environment;
-CREATE POLICY context_insert ON context_environment FOR INSERT
+DROP POLICY IF EXISTS config_insert ON plugin_config;
+CREATE POLICY config_insert ON plugin_config FOR INSERT
     WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
-DROP POLICY IF EXISTS context_update ON context_environment;
-CREATE POLICY context_update ON context_environment FOR UPDATE
-    USING (agent_id = current_setting('app.current_agent_id', true) OR access_scope = 'global')
-    WITH CHECK (agent_id = current_setting('app.current_agent_id', true) OR access_scope = 'global');
+DROP POLICY IF EXISTS config_update ON plugin_config;
+CREATE POLICY config_update ON plugin_config FOR UPDATE
+    USING (agent_id = current_setting('app.current_agent_id', true))
+    WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
 
-DROP POLICY IF EXISTS context_delete ON context_environment;
-CREATE POLICY context_delete ON context_environment FOR DELETE
+DROP POLICY IF EXISTS config_delete ON plugin_config;
+CREATE POLICY config_delete ON plugin_config FOR DELETE
     USING (agent_id = current_setting('app.current_agent_id', true));
 
 -- memory_episodic
