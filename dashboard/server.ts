@@ -62,11 +62,11 @@ export function startDashboard(opts: DashboardOptions = {}): void {
   registerWorkspaceRoutes(router);
 
   // Resolve static file directories
-  // 1. dashboard/public/ for our HTML/CSS/JS
-  // 2. node_modules/@ambientcss/css/ for AmbientCSS asset
-  const dashboardDir = dirname(__filename);
-  const publicDir = join(dashboardDir, "public");
-  const ambientDir = join(dashboardDir, "..", "node_modules", "@ambientcss", "css");
+  // At runtime __dirname = dist/dashboard/, so go up 2 levels to project root
+  // Static files are NOT compiled by tsc — they live in dashboard/public/
+  const projectRoot = join(dirname(__filename), "..", "..");
+  const publicDir = join(projectRoot, "dashboard", "public");
+  const ambientDir = join(projectRoot, "node_modules", "@ambientcss", "css");
 
   _server = createServer(async (req, res) => {
     const url = req.url || "/";
@@ -91,7 +91,8 @@ export function startDashboard(opts: DashboardOptions = {}): void {
     const served = await serveStatic(res, [publicDir], pathname);
     if (!served) {
       // SPA fallback — serve index.html for any unmatched path
-      await serveStatic(res, [publicDir], "/index.html");
+      const fallback = await serveStatic(res, [publicDir], "/index.html");
+      if (!fallback) sendError(res, 404, "Dashboard files not found");
     }
   });
 
