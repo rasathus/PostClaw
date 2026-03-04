@@ -53,6 +53,16 @@
 2. **PostgreSQL** (v14+) — installed and running. Depending on your system, you may need the `postgresql-<version>-pgvector` package installed. The `pgvector` extension is installed automatically by the setup command.
 3. **Node.js** (v18+) and **npm**
 4. **Embedding Provider** — LM Studio, Ollama, or any OpenAI-compatible endpoint serving an embedding model (e.g. `nomic-embed-text-v2-moe`)
+   ```json
+           "memorySearch": {
+                "provider": "openai",
+                "remote": {
+                  "baseUrl": "http://<IP-ADDRESS>:<PORT>/v1",
+                  "apiKey": "<API-KEY>"
+                },
+                "model": "text-embedding-nomic-embed-text-v2-moe"
+              }
+   ```
 5. **Tools Enabled** - At the least, you need the following permissions setup in your `openclaw.json`. This is a **Breaking Change** introduced in 2026.3.2 of OpenClaw:
    ```json
         "tools": {
