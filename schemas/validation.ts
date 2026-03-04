@@ -310,3 +310,100 @@ export const PromptJsonSchema = z.object({
 });
 
 export type PromptJson = z.infer<typeof PromptJsonSchema>;
+
+// =============================================================================
+// DASHBOARD API SCHEMAS
+// =============================================================================
+
+/** Create a new persona entry */
+export const PersonaCreateSchema = z.object({
+    category: z.string().min(1).max(50),
+    content: z.string().min(1),
+    is_always_active: z.boolean().default(false),
+    access_scope: AccessScopeSchema.default("private"),
+});
+
+export type PersonaCreate = z.infer<typeof PersonaCreateSchema>;
+
+/** Update an existing persona entry */
+export const PersonaUpdateSchema = z.object({
+    category: z.string().min(1).max(50).optional(),
+    content: z.string().min(1).optional(),
+    is_always_active: z.boolean().optional(),
+    access_scope: AccessScopeSchema.optional(),
+});
+
+export type PersonaUpdate = z.infer<typeof PersonaUpdateSchema>;
+
+/** Create a new memory via dashboard */
+export const DashboardMemoryCreateSchema = z.object({
+    content: z.string().min(1),
+    scope: AccessScopeSchema.default("private"),
+    category: z.string().max(50).optional(),
+    tier: MemoryTierSchema.default("daily"),
+    volatility: VolatilitySchema.default("low"),
+    metadata: z.record(z.string(), z.any()).optional(),
+});
+
+export type DashboardMemoryCreate = z.infer<typeof DashboardMemoryCreateSchema>;
+
+/** Update a memory via dashboard */
+export const DashboardMemoryUpdateSchema = z.object({
+    content: z.string().min(1).optional(),
+    category: z.string().max(50).optional().nullable(),
+    tier: MemoryTierSchema.optional(),
+    volatility: VolatilitySchema.optional(),
+    is_archived: z.boolean().optional(),
+    metadata: z.record(z.string(), z.any()).optional(),
+});
+
+export type DashboardMemoryUpdate = z.infer<typeof DashboardMemoryUpdateSchema>;
+
+/** Import memories from markdown content */
+export const MemoryImportSchema = z.object({
+    content: z.string().min(1),
+    source_filename: z.string().optional(),
+    tier: MemoryTierSchema.default("stable"),
+});
+
+export type MemoryImport = z.infer<typeof MemoryImportSchema>;
+
+/** Create a knowledge graph edge */
+export const GraphEdgeCreateSchema = z.object({
+    source_memory_id: z.string().uuid(),
+    target_memory_id: z.string().uuid(),
+    relationship_type: z.string().min(1).max(100),
+    weight: z.number().min(0).max(10).default(1.0),
+});
+
+export type GraphEdgeCreate = z.infer<typeof GraphEdgeCreateSchema>;
+
+/** Trigger a script run */
+export const ScriptRunSchema = z.object({
+    agentId: z.string().default("main"),
+    file: z.string().optional(),
+});
+
+export type ScriptRun = z.infer<typeof ScriptRunSchema>;
+
+/** Standard API response wrapper */
+export const ApiResponseSchema = z.object({
+    ok: z.boolean(),
+    data: z.any().optional(),
+    error: z.string().optional(),
+});
+
+export type ApiResponse = z.infer<typeof ApiResponseSchema>;
+
+/** Memory list query params */
+export const MemoryListQuerySchema = z.object({
+    agentId: z.string().default("main"),
+    limit: z.coerce.number().int().min(1).max(500).default(50),
+    offset: z.coerce.number().int().min(0).default(0),
+    category: z.string().optional(),
+    tier: MemoryTierSchema.optional(),
+    archived: z.enum(["true", "false", "all"]).default("false"),
+    search: z.string().optional(),
+});
+
+export type MemoryListQuery = z.infer<typeof MemoryListQuerySchema>;

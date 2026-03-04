@@ -4,10 +4,13 @@
 
 export { getSql, LM_STUDIO_URL, POSTCLAW_DB_URL, EMBEDDING_MODEL, getEmbedding, hashContent, setEmbeddingConfig, setDbUrl } from "./services/db.js";
 export { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, fetchDynamicTools, storeMemory, updateMemory, linkMemories, storeTool } from "./services/memoryService.js";
+export { listPersonas, getPersona, createPersona, updatePersona, deletePersona } from "./services/personaService.js";
 export type { ChatCompletionTool } from "./services/memoryService.js";
 
 import { getSql } from "./services/db.js";
 import { stopService } from "./scripts/sleep_cycle.js";
+import { stopDashboard } from "./dashboard/server.js";
+import { listPersonas, getPersona, createPersona, updatePersona, deletePersona } from "./services/personaService.js";
 import {
   type ChatMessage,
   type ContentPart,
@@ -338,6 +341,80 @@ const openclawPostgresPlugin = {
       { names: ["tool_store"] },
     );
 
+    // --- persona_list: List all persona entries ---
+    api.registerTool(
+      {
+        name: "persona_list",
+        description: "List all persona rules for the current agent.",
+        parameters: Type.Object({}),
+        async execute(_toolCallId: string, _args: Record<string, never>, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+          const agentId = ctx?.agentId || "main";
+          await ensureAgent(agentId);
+          const personas = await listPersonas(agentId);
+          return JSON.stringify(personas);
+        },
+      },
+      { names: ["persona_list"] },
+    );
+
+    // --- persona_get: Get a specific persona entry ---
+    api.registerTool(
+      {
+        name: "persona_get",
+        description: "Get a specific persona rule by its UUID.",
+        parameters: Type.Object({
+          persona_id: Type.String({ description: "UUID of the persona entry" }),
+        }),
+        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+          const agentId = ctx?.agentId || "main";
+          await ensureAgent(agentId);
+          const persona = await getPersona(agentId, args.persona_id);
+          return persona ? JSON.stringify(persona) : "Persona not found.";
+        },
+      },
+      { names: ["persona_get"] },
+    );
+
+    // --- persona_update: Update a persona entry ---
+    api.registerTool(
+      {
+        name: "persona_update",
+        description: "Update an existing persona rule. You can change the category, content, or whether it is always active.",
+        parameters: Type.Object({
+          persona_id: Type.String({ description: "UUID of the persona entry to update" }),
+          category: Type.Optional(Type.String({ description: "New category name" })),
+          content: Type.Optional(Type.String({ description: "New content text" })),
+          is_always_active: Type.Optional(Type.Boolean({ description: "Whether this rule is always injected" })),
+        }),
+        async execute(_toolCallId: string, args: { persona_id: string; category?: string; content?: string; is_always_active?: boolean }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+          const agentId = ctx?.agentId || "main";
+          await ensureAgent(agentId);
+          const { persona_id, ...updates } = args;
+          const result = await updatePersona(agentId, persona_id, updates);
+          return result ? JSON.stringify(result) : "Persona not found.";
+        },
+      },
+      { names: ["persona_update"] },
+    );
+
+    // --- persona_delete: Delete a persona entry ---
+    api.registerTool(
+      {
+        name: "persona_delete",
+        description: "Delete a persona rule by its UUID.",
+        parameters: Type.Object({
+          persona_id: Type.String({ description: "UUID of the persona entry to delete" }),
+        }),
+        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+          const agentId = ctx?.agentId || "main";
+          await ensureAgent(agentId);
+          const deleted = await deletePersona(agentId, args.persona_id);
+          return deleted ? '{"status": "deleted"}' : "Persona not found.";
+        },
+      },
+      { names: ["persona_delete"] },
+    );
+
     // -------------------------------------------------------------------------
     // agent_end — Log episodic memories after agent completes
     //
@@ -555,6 +632,29 @@ const openclawPostgresPlugin = {
             stopService();
             await getSql().end();
           });
+        postclaw
+          .command("dashboard")
+          .description("Start the dashboard server standalone")
+          .option("--port <port>", "Port to listen on (default: 3333)")
+          .option("--bind <address>", "Bind address (default: 127.0.0.1)")
+          .action(async (opts: { port?: string; bind?: string }) => {
+            const pluginCfg = api.config?.plugins?.entries?.postclaw?.config;
+            if (pluginCfg?.dbUrl) {
+              setDbUrl(pluginCfg.dbUrl);
+            }
+            const memCfg = api.config?.agents?.defaults?.memorySearch;
+            const llmUrl = memCfg?.remote?.baseUrl || "http://127.0.0.1:1234/v1";
+            const embModel = memCfg?.remote?.model || memCfg?.model || "text-embedding-nomic-embed-text-v2-moe";
+            setEmbeddingConfig(llmUrl, embModel);
+
+            const { startDashboard } = await import("./dashboard/server.js");
+            startDashboard({
+              port: opts.port ? parseInt(opts.port, 10) : undefined,
+              bindAddress: opts.bind,
+              workspaceDir: api.config?.workspaceDir,
+            });
+            console.log("[PostClaw] Dashboard running. Press Ctrl+C to stop.");
+          });
       },
       { commands: ["postclaw"] },
     );
@@ -572,6 +672,22 @@ const openclawPostgresPlugin = {
         });
       }).catch((err) => {
         console.error("[PostClaw] Failed to start sleep service:", err);
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BACKGROUND SERVICE — Optional dashboard server
+    // ─────────────────────────────────────────────────────────────────────────
+    const dashboardEnabled = pluginConfig?.dashboardEnabled;
+    if (dashboardEnabled) {
+      import("./dashboard/server.js").then(({ startDashboard }) => {
+        startDashboard({
+          port: pluginConfig?.dashboardPort,
+          bindAddress: pluginConfig?.dashboardBindAddress,
+          workspaceDir: api.config?.workspaceDir,
+        });
+      }).catch((err) => {
+        console.error("[PostClaw] Failed to start dashboard:", err);
       });
     }
 
@@ -597,6 +713,8 @@ if (require.main === module) {
   // Graceful shutdown
   process.on("SIGINT", async () => {
     console.log("\nShutting down...");
+    stopService();
+    stopDashboard();
     await getSql().end();
     process.exit(0);
   });
