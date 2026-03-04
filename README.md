@@ -1,6 +1,14 @@
 # PostClaw — PostgreSQL Memory Plugin for OpenClaw
 
-**PostClaw** replaces OpenClaw's default memory system with a production-grade PostgreSQL backend powered by `pgvector`. It provides semantic search, episodic memory, knowledge graph linking, dynamic persona injection, and autonomous memory management for multi-agent swarms.
+<p align="center">
+<img src="https://github.com/user-attachments/assets/2a7798c6-e711-40fa-bcf2-7416180651cc" 
+        alt="PostClaw Logo - Postmodern Artwork of a giant lobster interspersed with technology and classical designs." 
+        width="800" 
+        height="600" 
+        style="display: block; margin: 0 auto" />
+</p>
+
+**PostClaw** replaces OpenClaw's default memory system with a PostgreSQL backend powered by `pgvector`. It provides semantic search, episodic memory, knowledge graph linking, dynamic persona injection, and autonomous memory management for multi-agent swarms.
 
 ---
 
@@ -54,7 +62,6 @@
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │                    Agent Tools                               │   │
 │  │  memory_search │ memory_store │ memory_update │ memory_link  │   │
-│  │                             tool_store                       │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
@@ -384,7 +391,7 @@ memory_link({
 
 ### `tool_store`
 
-Store or update a tool schema in the dynamic tool database for future conversations.
+Reserved for potential future use, if OpenClaw ever provides a hook or API call that allows tool injections.
 
 ```
 tool_store({
@@ -560,7 +567,7 @@ Per-agent persona rules (core identity + situational context).
 
 ### `context_environment`
 
-Dynamic tool schemas stored with embeddings.
+Dynamic tool schemas stored with embeddings. Reserved for potential future use.
 
 | Column | Type | Description |
 |--------|------|-------------|
