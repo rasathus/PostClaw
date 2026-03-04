@@ -35,6 +35,7 @@
     <button class="tab-btn" data-tab="memories">🧠 Memories</button>
     <button class="tab-btn" data-tab="graph">🕸️ Graph</button>
     <button class="tab-btn" data-tab="scripts">⚡ Scripts</button>
+    <button class="tab-btn" data-tab="config">⚙️ Config</button>
   </nav>
 
   <!-- Tab Panels -->
@@ -215,6 +216,124 @@
             Import Persona
           </button>
           <div id="persona-import-status" class="script-status"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============== CONFIG TAB ============== -->
+    <section id="tab-config" class="tab-panel">
+      <div class="panel-header">
+        <h2>Plugin Configuration</h2>
+        <div class="header-actions">
+          <button id="btn-reset-config" class="btn-secondary ambient amb-surface amb-fillet amb-elevation-1">
+            Reset to Defaults
+          </button>
+          <button id="btn-save-config" class="btn-primary ambient amb-surface amb-chamfer amb-elevation-1 amb-emit-green">
+            Save All Settings
+          </button>
+        </div>
+      </div>
+
+      <div class="config-grid">
+        <!-- RAG Settings -->
+        <div class="config-card ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>🔍 RAG & Search</h3>
+          <p class="hint">Fine-tune how memories are retrieved and injected into prompts.</p>
+          <div class="form-row">
+            <label for="cfg-rag-semantic-limit">Semantic Matches (Direct)</label>
+            <input id="cfg-rag-semantic-limit" type="number" min="1" max="50" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Number of direct vector matches to fetch.</small>
+          </div>
+          <div class="form-row">
+            <label for="cfg-rag-total-limit">Total Matches (Final)</label>
+            <input id="cfg-rag-total-limit" type="number" min="1" max="100" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Max memories after adding linked results.</small>
+          </div>
+          <div class="form-row">
+            <label for="cfg-rag-linked-similarity">Linked Similarity Floor</label>
+            <input id="cfg-rag-linked-similarity" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Boosted similarity score given to linked (traversed) memories.</small>
+          </div>
+        </div>
+
+        <!-- Persona & Tools -->
+        <div class="config-card ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>🎭 Persona & Tools</h3>
+          <p class="hint">Control situational context injection.</p>
+          <div class="form-row">
+            <label for="cfg-persona-situational-limit">Situational Persona Limit</label>
+            <input id="cfg-persona-situational-limit" type="number" min="1" max="20" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Number of similarity-ranked persona facts to inject.</small>
+          </div>
+          <div class="form-row">
+            <label for="cfg-tools-similarity">Dynamic Tool Similarity</label>
+            <input id="cfg-tools-similarity" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Minimum cosine similarity to suggest a dynamic tool.</small>
+          </div>
+          <div class="form-row">
+            <label for="cfg-tools-max">Max Dynamic Tools</label>
+            <input id="cfg-tools-max" type="number" min="0" max="10" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Limit total tools suggested via semantic search.</small>
+          </div>
+        </div>
+
+        <!-- System Prompt Templates -->
+        <div class="config-card config-card-full ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>📝 System Prompt Templates</h3>
+          <p class="hint">These blocks are injected into the agent's system prompt. Changes take effect on the next user message.</p>
+          <div class="form-row">
+            <label for="cfg-prompt-memory">Memory Management Rules</label>
+            <textarea id="cfg-prompt-memory" rows="8" class="ambient amb-surface-darker amb-fillet amb-elevation-0 code-font"></textarea>
+          </div>
+          <div class="form-row">
+            <label for="cfg-prompt-persona">Persona Management Rules</label>
+            <textarea id="cfg-prompt-persona" rows="6" class="ambient amb-surface-darker amb-fillet amb-elevation-0 code-font"></textarea>
+          </div>
+          <div class="form-row">
+            <label for="cfg-prompt-heartbeat">Heartbeat / Autonomous Rules</label>
+            <textarea id="cfg-prompt-heartbeat" rows="6" class="ambient amb-surface-darker amb-fillet amb-elevation-0 code-font"></textarea>
+            <small>Use {{heartbeatFilePath}} as a placeholder for the path below.</small>
+          </div>
+          <div class="form-row">
+            <label for="cfg-prompt-heartbeat-path">Heartbeat File Path</label>
+            <input id="cfg-prompt-heartbeat-path" type="text" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+          </div>
+        </div>
+
+        <!-- Sleep Cycle -->
+        <div class="config-card config-card-full ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>💤 Sleep & Maintenance</h3>
+          <p class="hint">Adjust the thresholds for background knowledge graph optimization.</p>
+          <div class="form-row-grid">
+            <div class="form-row">
+              <label for="cfg-sleep-dedup-threshold">Dedup Similarity</label>
+              <input id="cfg-sleep-dedup-threshold" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+              <small>Merge memories > this similarity (Default 0.80).</small>
+            </div>
+            <div class="form-row">
+              <label for="cfg-sleep-low-value-age">Cleanup Age (Days)</label>
+              <input id="cfg-sleep-low-value-age" type="number" min="1" max="365" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+              <small>Archive unused memories older than this.</small>
+            </div>
+            <div class="form-row">
+              <label for="cfg-sleep-link-min">Link Min Similarity</label>
+              <input id="cfg-sleep-link-min" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            </div>
+            <div class="form-row">
+              <label for="cfg-sleep-link-max">Link Max Similarity</label>
+              <input id="cfg-sleep-link-max" type="number" step="0.01" min="0" max="1" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Other -->
+        <div class="config-card ambient amb-surface amb-chamfer amb-elevation-2">
+          <h3>🛠️ Technical</h3>
+          <div class="form-row">
+            <label for="cfg-dedup-cache">Event Cache Size</label>
+            <input id="cfg-dedup-cache" type="number" min="100" max="10000" class="ambient amb-surface-darker amb-fillet amb-elevation-0" />
+            <small>Number of event IDs to store to prevent double-processing.</small>
+          </div>
         </div>
       </div>
     </section>

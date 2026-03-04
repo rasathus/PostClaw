@@ -38,8 +38,15 @@ export async function ensureAgent(agentId: string): Promise<void> {
  * Semantic search + graph traversal against memory_semantic + entity_edges.
  * Returns formatted context string or null if no results found.
  */
-export async function searchPostgres(agentId: string, userText: string): Promise<string | null> {
+export async function searchPostgres(
+  agentId: string, 
+  userText: string, 
+  options: { semanticLimit?: number; linkedSimilarity?: number; totalLimit?: number } = {}
+): Promise<string | null> {
   let contextString: string | null = null;
+  const semanticLimit = options.semanticLimit ?? 7;
+  const linkedSimilarity = options.linkedSimilarity ?? 0.8;
+  const totalLimit = options.totalLimit ?? 15;
 
   try {
     const embedding = await getEmbedding(userText);
@@ -55,10 +62,10 @@ export async function searchPostgres(agentId: string, userText: string): Promise
           FROM memory_semantic
           WHERE agent_id = ${agentId} AND is_archived = false
           ORDER BY similarity DESC
-          LIMIT 7
+          LIMIT ${semanticLimit}
         ),
         linked_matches AS (
-          SELECT m.id, m.content, 0.8 AS similarity, e.relationship_type, sm.id AS source_match_id
+          SELECT m.id, m.content, ${linkedSimilarity} AS similarity, e.relationship_type, sm.id AS source_match_id
           FROM entity_edges e
           JOIN memory_semantic m ON (e.target_memory_id = m.id OR e.source_memory_id = m.id)
           JOIN semantic_matches sm ON (e.source_memory_id = sm.id OR e.target_memory_id = sm.id)
@@ -69,7 +76,7 @@ export async function searchPostgres(agentId: string, userText: string): Promise
           UNION ALL
           SELECT id, content, similarity, relationship_type FROM linked_matches
           ORDER BY similarity DESC
-          LIMIT 15
+          LIMIT ${totalLimit}
         )
         SELECT * FROM final_matches;
       `;
@@ -186,8 +193,13 @@ export async function logEpisodicToolCall(agentId: string,
 /**
  * Fetch persona rules (core + situational) from agent_persona.
  */
-export async function fetchPersonaContext(agentId: string, embedding: number[] | null): Promise<string | null> {
+export async function fetchPersonaContext(
+  agentId: string, 
+  embedding: number[] | null,
+  options: { situationalLimit?: number } = {}
+): Promise<string | null> {
   let personaContext: string | null = null;
+  const situationalLimit = options.situationalLimit ?? 3;
 
   try {
     await getSql().begin(async (tx: any) => {
@@ -208,7 +220,7 @@ export async function fetchPersonaContext(agentId: string, embedding: number[] |
             FROM agent_persona
             WHERE is_always_active = false
             ORDER BY embedding <=> ${JSON.stringify(embedding)}
-            LIMIT 3
+            LIMIT ${situationalLimit}
           )
           SELECT * FROM core_persona
           UNION ALL
@@ -248,8 +260,14 @@ export type { ChatCompletionTool } from "../schemas/validation.js";
 /**
  * Fetch dynamic tools from context_environment based on embedding similarity.
  */
-export async function fetchDynamicTools(agentId: string, embedding: number[]): Promise<ChatCompletionTool[]> {
+export async function fetchDynamicTools(
+  agentId: string, 
+  embedding: number[],
+  options: { similarityThreshold?: number; maxTools?: number } = {}
+): Promise<ChatCompletionTool[]> {
   let dynamicTools: ChatCompletionTool[] = [];
+  const similarityThreshold = options.similarityThreshold ?? 0.35;
+  const maxTools = options.maxTools ?? 3;
 
   try {
     await getSql().begin(async (tx: any) => {
@@ -258,9 +276,9 @@ export async function fetchDynamicTools(agentId: string, embedding: number[]): P
       const results = await tx`
         SELECT tool_name, context_data, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS similarity
         FROM context_environment
-        WHERE 1 - (embedding <=> ${JSON.stringify(embedding)}) > 0.35
+        WHERE 1 - (embedding <=> ${JSON.stringify(embedding)}) > ${similarityThreshold}
         ORDER BY similarity DESC
-        LIMIT 3;
+        LIMIT ${maxTools};
       `;
 
       if (results.length > 0) {

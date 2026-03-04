@@ -66,6 +66,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "personas") loadPersonas();
     if (btn.dataset.tab === "memories") loadMemories();
     if (btn.dataset.tab === "graph") loadGraph();
+    if (btn.dataset.tab === "config") loadConfig();
   });
 });
 
@@ -494,6 +495,97 @@ $("btn-run-persona-import").addEventListener("click", async () => {
 });
 
 // =============================================================================
+// CONFIGURATION
+// =============================================================================
+
+async function loadConfig() {
+  try {
+    const config = await api("GET", "/api/config");
+    
+    // RAG
+    $("cfg-rag-semantic-limit").value = config.rag.semanticLimit;
+    $("cfg-rag-total-limit").value = config.rag.totalLimit;
+    $("cfg-rag-linked-similarity").value = config.rag.linkedSimilarity;
+
+    // Persona
+    $("cfg-persona-situational-limit").value = config.persona.situationalLimit;
+    $("cfg-tools-similarity").value = config.dynamicTools.similarityThreshold;
+    $("cfg-tools-max").value = config.dynamicTools.maxTools;
+
+    // Prompts
+    $("cfg-prompt-memory").value = config.prompts.memoryRules;
+    $("cfg-prompt-persona").value = config.prompts.personaRules;
+    $("cfg-prompt-heartbeat").value = config.prompts.heartbeatRules;
+    $("cfg-prompt-heartbeat-path").value = config.prompts.heartbeatFilePath;
+
+    // Sleep
+    $("cfg-sleep-dedup-threshold").value = config.sleep.duplicateSimilarityThreshold;
+    $("cfg-sleep-low-value-age").value = config.sleep.lowValueAgeDays;
+    $("cfg-sleep-link-min").value = config.sleep.linkSimilarityMin;
+    $("cfg-sleep-link-max").value = config.sleep.linkSimilarityMax;
+
+    // Technical
+    $("cfg-dedup-cache").value = config.dedup.maxCacheSize;
+
+  } catch (err) { toast(err.message, "error"); }
+}
+
+$("btn-save-config").addEventListener("click", async () => {
+  const data = {
+    rag: {
+      semanticLimit: parseInt($("cfg-rag-semantic-limit").value),
+      totalLimit: parseInt($("cfg-rag-total-limit").value),
+      linkedSimilarity: parseFloat($("cfg-rag-linked-similarity").value)
+    },
+    persona: {
+      situationalLimit: parseInt($("cfg-persona-situational-limit").value)
+    },
+    dynamicTools: {
+      similarityThreshold: parseFloat($("cfg-tools-similarity").value),
+      maxTools: parseInt($("cfg-tools-max").value)
+    },
+    prompts: {
+      memoryRules: $("cfg-prompt-memory").value,
+      personaRules: $("cfg-prompt-persona").value,
+      heartbeatRules: $("cfg-prompt-heartbeat").value,
+      heartbeatFilePath: $("cfg-prompt-heartbeat-path").value
+    },
+    sleep: {
+      // Keep other sleep settings at their defaults if not in UI
+      episodicBatchLimit: 100,
+      duplicateScanLimit: 200,
+      linkCandidatesPerMemory: 5,
+      linkBatchSize: 20,
+      linkScanLimit: 50,
+      lowValueProtectedTiers: ['permanent', 'stable'],
+      
+      duplicateSimilarityThreshold: parseFloat($("cfg-sleep-dedup-threshold").value),
+      lowValueAgeDays: parseInt($("cfg-sleep-low-value-age").value),
+      linkSimilarityMin: parseFloat($("cfg-sleep-link-min").value),
+      linkSimilarityMax: parseFloat($("cfg-sleep-link-max").value),
+    },
+    dedup: {
+      maxCacheSize: parseInt($("cfg-dedup-cache").value)
+    }
+  };
+
+  try {
+    await api("POST", "/api/config", data);
+    toast("Configuration saved!", "success");
+    loadConfig();
+  } catch (err) { toast(err.message, "error"); }
+});
+
+$("btn-reset-config").addEventListener("click", async () => {
+  if (!confirm("Reset all settings to defaults?")) return;
+  try {
+    await api("POST", "/api/config/reset");
+    toast("Configuration reset to defaults", "success");
+    loadConfig();
+  } catch (err) { toast(err.message, "error"); }
+});
+
+// =============================================================================
 // INIT
 // =============================================================================
 
@@ -501,4 +593,5 @@ $("btn-run-persona-import").addEventListener("click", async () => {
   await loadAgents();
   loadPersonas();
   loadWorkspaceFiles();
+  loadConfig(); // Pre-load config state
 })();

@@ -32,17 +32,16 @@ export type { ChatMessage, ContentPart, ToolCallRecord } from "./schemas/validat
 // =============================================================================
 
 const processedEvents = new Set<string>();
-const MAX_CACHE_SIZE = 1000;
-
-/** Cache last message from message_received (fires before before_prompt_build). */
-let lastReceivedMessage: string = "";
+import { getCurrentConfig, loadConfig, setWorkspaceDir } from "./services/config.js";
 
 function isDuplicate(key: string): boolean {
+  const maxCacheSize = getCurrentConfig().dedup.maxCacheSize;
   if (processedEvents.has(key)) return true;
   processedEvents.add(key);
-  if (processedEvents.size > MAX_CACHE_SIZE) processedEvents.clear();
+  if (processedEvents.size > maxCacheSize) processedEvents.clear();
   return false;
 }
+let lastReceivedMessage: string = "";
 
 // =============================================================================
 // HELPERS
@@ -93,6 +92,15 @@ const openclawPostgresPlugin = {
     const llmUrl = memoryConfig?.remote?.baseUrl || "http://127.0.0.1:1234/v1";
     const llmModel = memoryConfig?.remote?.model || memoryConfig?.model || "text-embedding-nomic-embed-text-v2-moe";
     setEmbeddingConfig(llmUrl, llmModel);
+
+    // Load PostClaw persistent config
+    const workspaceDir = api.config?.workspaceDir;
+    if (workspaceDir) {
+      setWorkspaceDir(workspaceDir);
+      loadConfig().then(() => {
+        console.log("[PostClaw] Configuration loaded successfully");
+      });
+    }
 
     // -------------------------------------------------------------------------
     // before_prompt_build — Prune + replace system prompt, inject RAG context
@@ -155,39 +163,13 @@ const openclawPostgresPlugin = {
           // ==================================================================
           // STEP 2: Inject custom memory architecture rules
           // ==================================================================
+          const config = getCurrentConfig();
 
-          sysPrompt += `
-            ## Memory & Knowledge Management
-            You are a stateful agent. Your context window is ephemeral but your PostgreSQL memory is permanent.
-            Silently manage your knowledge — never ask permission to save, link, or update facts.
-
-            - **Retrieval:** Relevant memories (with UUID tags) are auto-injected.
-            - **Search:** Use the \`memory_search\` tool when you need to recall facts not in the current context.
-            - **Correct/update facts:** Use the \`memory_update\` tool when a fact is incorrect, outdated, or needs to be updated. When using memory_update, ALWAYS assign an appropriate 'tier' and 'category'.
-            - **Save new facts:** Use the \`memory_store\` tool when a new fact is learned. When using memory_store, ALWAYS assign an appropriate 'tier' (e.g., 'permanent' for core user identity, 'daily' for current tasks) and 'category'.
-            - **Link related memories:** Use the \`memory_link\` tool when two memories are related.
-            - **Store a tool:** Use the \`tool_store\` tool when a new tool schema is learned.
-            `;
-
-
-          sysPrompt += `
-            ## Persona Management
-            You have access to the following tools to manage your persona/identity/rules:
-
-            - **Retrieval**: Use \`persona_list\` to see all available persona rules or \`persona_get\` for details.
-            - **Creation**: Use \`persona_create\` to define a new set of rules or identity markers.
-            - **Modification**: Use \`persona_update\` to modify an existing persona rule.
-            - **Deletion**: Use \`persona_delete\` to remove a persona rule.
-            `;
-
-          sysPrompt += `
-            ## Autonomous Heartbeats
-            OpenClaw provides a native heartbeat loop — never use Linux crontab.
-            To schedule background tasks, add a checklist to: /home/cl/.openclaw/workspace/HEARTBEAT.md
-            On heartbeat poll: read that file. If no pending tasks, reply with ONLY: HEARTBEAT_OK
-
-            **Always Reply**: ALWAYS conclude your turn with a direct response to the user.
-            `;
+          sysPrompt += `\n\n${config.prompts.memoryRules}\n`;
+          sysPrompt += `\n\n${config.prompts.personaRules}\n`;
+          
+          const heartbeatPrompt = config.prompts.heartbeatRules.replace("{{heartbeatFilePath}}", config.prompts.heartbeatFilePath);
+          sysPrompt += `\n\n${heartbeatPrompt}\n`;
 
           // ==================================================================
           // STEP 3: Fetch persona + RAG context from Postgres (in parallel)
@@ -200,9 +182,15 @@ const openclawPostgresPlugin = {
 
             const [memoryContext, personaContext] = await Promise.all([
               // RAG: only when we have user text to search against
-              hasUserText ? searchPostgres(agentId, cleanText) : Promise.resolve(null),
+              hasUserText ? searchPostgres(agentId, cleanText, { 
+                semanticLimit: config.rag.semanticLimit,
+                linkedSimilarity: config.rag.linkedSimilarity,
+                totalLimit: config.rag.totalLimit
+              }) : Promise.resolve(null),
               // Persona: always fetch (core rules work without embedding)
-              fetchPersonaContext(agentId, embedding),
+              fetchPersonaContext(agentId, embedding, { 
+                situationalLimit: config.persona.situationalLimit 
+              }),
             ]);
 
             // Persona context → append to the pruned system prompt
@@ -257,7 +245,12 @@ const openclawPostgresPlugin = {
         async execute(_toolCallId: string, args: { query: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId);
-          const result = await searchPostgres(agentId, args.query);
+          const config = getCurrentConfig();
+          const result = await searchPostgres(agentId, args.query, {
+            semanticLimit: config.rag.semanticLimit,
+            linkedSimilarity: config.rag.linkedSimilarity,
+            totalLimit: config.rag.totalLimit
+          });
           return result || "No memories found matching that query.";
         },
       },
@@ -677,9 +670,11 @@ const openclawPostgresPlugin = {
     if (sleepIntervalHours !== 0) {
       // Start the background sleep cycle service (0 = disabled)
       import("./scripts/sleep_cycle.js").then(({ startService }) => {
+        const config = getCurrentConfig();
         startService({
           agentId: "main",
           intervalHours: sleepIntervalHours || 6,
+          config: config.sleep
         });
       }).catch((err) => {
         console.error("[PostClaw] Failed to start sleep service:", err);

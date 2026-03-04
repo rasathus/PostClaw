@@ -14,6 +14,8 @@ import { registerMemoryRoutes } from "./routes/memories.js";
 import { registerGraphRoutes } from "./routes/graph.js";
 import { registerScriptRoutes } from "./routes/scripts.js";
 import { registerWorkspaceRoutes, setWorkspaceDir } from "./routes/workspace.js";
+import { registerConfigRoutes } from "./routes/config.js";
+import { setWorkspaceDir as setSvcWorkspaceDir } from "../services/config.js";
 
 // =============================================================================
 // SERVER STATE
@@ -48,9 +50,10 @@ export function startDashboard(opts: DashboardOptions = {}): void {
     console.warn(`[Dashboard] ⚠️  The dashboard has NO authentication. Only bind to 0.0.0.0 on trusted networks.`);
   }
 
-  // Set workspace dir for file listing
+  // Set workspace dir for file listing and svc config
   if (opts.workspaceDir) {
     setWorkspaceDir(opts.workspaceDir);
+    setSvcWorkspaceDir(opts.workspaceDir);
   }
 
   // Build router and register all routes
@@ -60,6 +63,7 @@ export function startDashboard(opts: DashboardOptions = {}): void {
   registerGraphRoutes(router);
   registerScriptRoutes(router);
   registerWorkspaceRoutes(router);
+  registerConfigRoutes(router);
 
   // Resolve static file directories
   // At runtime __dirname = dist/dashboard/, so go up 2 levels to project root
