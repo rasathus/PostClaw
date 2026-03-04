@@ -1,5 +1,21 @@
-import postgres from "postgres";
-import { POSTCLAW_DB_URL, LM_STUDIO_URL } from "../services/db.js";
+/**
+ * PostClaw Sleep Cycle — Knowledge Graph Maintenance Agent
+ *
+ * Runs 4 maintenance phases on the memory database:
+ *   1. Episodic Consolidation — extract durable facts from short-term memory
+ *   2. Duplicate Detection — find and merge near-duplicate semantic memories
+ *   3. Low-Value Cleanup — archive stale, unaccessed memories
+ *   4. Link Discovery — auto-discover and create knowledge graph edges
+ *
+ * Usage (via OpenClaw CLI):
+ *   openclaw postclaw sleep [--agent-id <id>]
+ *
+ * Also runs as a background service on a configurable interval when the
+ * gateway is running (default: every 6 hours).
+ */
+
+import { getSql, getEmbedding, LM_STUDIO_URL } from "../services/db.js";
+import { ensureAgent } from "../services/memoryService.js";
 
 // =============================================================================
 // CONFIGURATION — All thresholds are easily tunable here
@@ -9,22 +25,22 @@ import { POSTCLAW_DB_URL, LM_STUDIO_URL } from "../services/db.js";
 const EPISODIC_BATCH_LIMIT = 100;
 
 // Phase 2: Duplicate detection
-const DUPLICATE_SIMILARITY_THRESHOLD = 0.80;   // Cosine similarity above this → considered duplicate
-const DUPLICATE_SCAN_LIMIT = 200;              // Max memories to scan for duplicates per cycle
+const DUPLICATE_SIMILARITY_THRESHOLD = 0.80;
+const DUPLICATE_SCAN_LIMIT = 200;
 
 // Phase 3: Low-value cleanup
-const LOW_VALUE_AGE_DAYS = 7;                  // Archive memories with 0 access older than this
-const LOW_VALUE_PROTECTED_TIERS = ['permanent', 'stable'];  // Never archive these tiers
+const LOW_VALUE_AGE_DAYS = 7;
+const LOW_VALUE_PROTECTED_TIERS = ['permanent', 'stable'];
 
 // Phase 4: Link discovery
-const LINK_SIMILARITY_MIN = 0.65;              // Lower bound for "related but distinct"
-const LINK_SIMILARITY_MAX = 0.92;              // Upper bound (above this → duplicate, not link)
-const LINK_CANDIDATES_PER_MEMORY = 5;          // Top-N similar memories to consider per source
-const LINK_BATCH_SIZE = 20;                    // Candidate pairs sent to LLM per batch
-const LINK_SCAN_LIMIT = 50;                    // Max source memories to scan for links per cycle
+const LINK_SIMILARITY_MIN = 0.65;
+const LINK_SIMILARITY_MAX = 0.92;
+const LINK_CANDIDATES_PER_MEMORY = 5;
+const LINK_BATCH_SIZE = 20;
+const LINK_SCAN_LIMIT = 50;
 
-const AGENT_ID = process.argv[2] || "default_agent";
-const sql = postgres(POSTCLAW_DB_URL!);
+// Background service
+const DEFAULT_INTERVAL_HOURS = 6;
 
 // =============================================================================
 // TYPES
@@ -38,29 +54,33 @@ interface SleepCycleResult {
 interface LinkClassification {
   source_id: string;
   target_id: string;
-  relationship: string; // "none" means no link
+  relationship: string;
+}
+
+export interface SleepCycleOptions {
+  agentId?: string;
+  llmUrl?: string;
+  llmModel?: string;
+}
+
+export interface SleepCycleStats {
+  factsExtracted: number;
+  duplicatesMerged: number;
+  staleArchived: number;
+  linksCreated: number;
 }
 
 // =============================================================================
 // UTILITIES
 // =============================================================================
 
-async function getEmbedding(text: string): Promise<number[]> {
-  const res = await fetch(`${LM_STUDIO_URL}/v1/embeddings`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ input: text, model: "text-embedding-nomic-embed-text-v2-moe" }),
-  });
-  const data: any = await res.json();
-  return data.data[0].embedding;
-}
-
-async function callLLM(systemPrompt: string, userPrompt: string, temperature = 0.1): Promise<string> {
-  const res = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
+async function callLLM(systemPrompt: string, userPrompt: string, llmUrl: string, llmModel: string, temperature = 0.1): Promise<string> {
+  const baseUrl = llmUrl.replace(/\/v1\/?$/, "");
+  const res = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "qwen3.5-9b",
+      model: llmModel,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -69,10 +89,14 @@ async function callLLM(systemPrompt: string, userPrompt: string, temperature = 0
     }),
   });
 
+  if (!res.ok) {
+    throw new Error(`LLM request failed: ${res.status} ${res.statusText}`);
+  }
+
   const data: any = await res.json();
   let jsonString = data.choices[0].message.content.trim();
 
-  // Strip reasoning block from qwen3.5 output
+  // Strip reasoning blocks from qwen3.5 output
   jsonString = jsonString.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   if (jsonString.startsWith("```json")) jsonString = jsonString.replace(/^```json\n/, "").replace(/\n```$/, "");
   if (jsonString.startsWith("```")) jsonString = jsonString.replace(/^```\n/, "").replace(/\n```$/, "");
@@ -81,19 +105,21 @@ async function callLLM(systemPrompt: string, userPrompt: string, temperature = 0
 }
 
 // =============================================================================
-// PHASE 1: EPISODIC CONSOLIDATION (existing logic)
+// PHASE 1: EPISODIC CONSOLIDATION
 // =============================================================================
 
-async function phaseConsolidateEpisodic(): Promise<void> {
+async function phaseConsolidateEpisodic(agentId: string, llmUrl: string, llmModel: string): Promise<number> {
   console.log(`\n[PHASE 1] Episodic Memory Consolidation`);
   console.log(`─────────────────────────────────────────`);
 
+  const sql = getSql();
+
   const episodes = await sql.begin(async (tx: any) => {
-    await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+    await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
     return await tx`
-      SELECT id, event_type, event_summary, created_at 
-      FROM memory_episodic 
-      WHERE agent_id = ${AGENT_ID} AND is_archived = false
+      SELECT id, event_type, event_summary, created_at
+      FROM memory_episodic
+      WHERE agent_id = ${agentId} AND is_archived = false
       ORDER BY created_at ASC
       LIMIT ${EPISODIC_BATCH_LIMIT};
     `;
@@ -101,7 +127,7 @@ async function phaseConsolidateEpisodic(): Promise<void> {
 
   if (episodes.length === 0) {
     console.log(`[PHASE 1] No new episodic memories to process.`);
-    return;
+    return 0;
   }
 
   console.log(`[PHASE 1] Found ${episodes.length} episodic events to consolidate.`);
@@ -114,7 +140,7 @@ async function phaseConsolidateEpisodic(): Promise<void> {
 You are the subconscious memory consolidation engine for an AI assistant.
 Your job is to review the following chronological transcript of the agent's recent short-term memory (user prompts and tool executions).
 
-Extract ONLY durable, long-term facts that the agent should remember forever. 
+Extract ONLY durable, long-term facts that the agent should remember forever.
 - Ignore casual banter, specific temporary weather lookups, or transient errors.
 - DO extract user preferences, API keys, infrastructure details, or new project rules.
 
@@ -126,14 +152,14 @@ Output your response EXCLUSIVELY as a JSON object matching this schema:
 Do not use markdown formatting.
 `;
 
-  const jsonString = await callLLM(systemPrompt, `Here is the recent episodic transcript to analyze:\n\n${transcript}`);
+  const jsonString = await callLLM(systemPrompt, `Here is the recent episodic transcript to analyze:\n\n${transcript}`, llmUrl, llmModel);
   const result: SleepCycleResult = JSON.parse(jsonString);
 
   console.log(`[PHASE 1] Extracted ${result.extracted_durable_facts.length} permanent facts.`);
   console.log(`[PHASE 1] Session Summary: ${result.session_summary}`);
 
   await sql.begin(async (tx: any) => {
-    await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+    await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
     for (const fact of result.extracted_durable_facts) {
       const embedding = await getEmbedding(fact);
@@ -145,7 +171,7 @@ Do not use markdown formatting.
         INSERT INTO memory_semantic (
           agent_id, access_scope, content, content_hash, embedding, embedding_model, tier
         ) VALUES (
-          ${AGENT_ID}, 'private', ${fact}, ${contentHash}, ${JSON.stringify(embedding)}, 'nomic-embed-text-v2-moe', 'permanent'
+          ${agentId}, 'private', ${fact}, ${contentHash}, ${JSON.stringify(embedding)}, 'nomic-embed-text-v2-moe', 'permanent'
         ) ON CONFLICT (agent_id, content_hash) DO NOTHING;
       `;
       console.log(`[PHASE 1] -> Saved durable fact: "${fact}"`);
@@ -153,30 +179,33 @@ Do not use markdown formatting.
 
     const episodeIds = episodes.map((e: any) => e.id);
     await tx`
-      UPDATE memory_episodic 
-      SET is_archived = true 
+      UPDATE memory_episodic
+      SET is_archived = true
       WHERE id IN ${sql(episodeIds)}
     `;
   });
 
   console.log(`[PHASE 1] Archived ${episodes.length} short-term memories. Consolidation complete.`);
+  return result.extracted_durable_facts.length;
 }
 
 // =============================================================================
 // PHASE 2: DUPLICATE DETECTION & MERGE
 // =============================================================================
 
-async function phaseDuplicateDetection(): Promise<void> {
+async function phaseDuplicateDetection(agentId: string): Promise<number> {
   console.log(`\n[PHASE 2] Duplicate Detection & Merge`);
   console.log(`─────────────────────────────────────────`);
   console.log(`[PHASE 2] Similarity threshold: ${DUPLICATE_SIMILARITY_THRESHOLD}`);
 
+  const sql = getSql();
+
   const memories = await sql.begin(async (tx: any) => {
-    await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+    await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
     return await tx`
       SELECT id, content, embedding, usefulness_score, access_count, created_at
       FROM memory_semantic
-      WHERE agent_id = ${AGENT_ID} AND is_archived = false
+      WHERE agent_id = ${agentId} AND is_archived = false
       ORDER BY created_at DESC
       LIMIT ${DUPLICATE_SCAN_LIMIT};
     `;
@@ -184,7 +213,7 @@ async function phaseDuplicateDetection(): Promise<void> {
 
   if (memories.length < 2) {
     console.log(`[PHASE 2] Not enough memories to scan for duplicates (${memories.length}).`);
-    return;
+    return 0;
   }
 
   console.log(`[PHASE 2] Scanning ${memories.length} memories for duplicates...`);
@@ -193,17 +222,16 @@ async function phaseDuplicateDetection(): Promise<void> {
   const archivedIds = new Set<string>();
 
   await sql.begin(async (tx: any) => {
-    await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+    await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
     for (let i = 0; i < memories.length; i++) {
       const source = memories[i];
       if (archivedIds.has(source.id)) continue;
 
-      // Find near-duplicates using vector similarity
       const duplicates = await tx`
         SELECT id, content, usefulness_score, access_count
         FROM memory_semantic
-        WHERE agent_id = ${AGENT_ID}
+        WHERE agent_id = ${agentId}
           AND is_archived = false
           AND id != ${source.id}
           AND 1 - (embedding <=> ${source.embedding}) > ${DUPLICATE_SIMILARITY_THRESHOLD}
@@ -213,8 +241,6 @@ async function phaseDuplicateDetection(): Promise<void> {
 
       if (duplicates.length === 0) continue;
 
-      // The source is already the "best" candidate if it has higher score,
-      // but we pick the overall best among all duplicates + source
       const allCandidates = [source, ...duplicates];
       allCandidates.sort((a: any, b: any) => {
         const scoreA = (a.usefulness_score || 0) + (a.access_count || 0) * 0.1;
@@ -231,7 +257,7 @@ async function phaseDuplicateDetection(): Promise<void> {
         await tx`
           UPDATE memory_semantic
           SET is_archived = true, superseded_by = ${survivor.id}
-          WHERE id = ${loser.id} AND agent_id = ${AGENT_ID};
+          WHERE id = ${loser.id} AND agent_id = ${agentId};
         `;
         archivedIds.add(loser.id);
         mergedCount++;
@@ -241,24 +267,27 @@ async function phaseDuplicateDetection(): Promise<void> {
   });
 
   console.log(`[PHASE 2] Merged ${mergedCount} duplicate memories.`);
+  return mergedCount;
 }
 
 // =============================================================================
 // PHASE 3: LOW-VALUE ENTRY CLEANUP
 // =============================================================================
 
-async function phaseLowValueCleanup(): Promise<void> {
+async function phaseLowValueCleanup(agentId: string): Promise<number> {
   console.log(`\n[PHASE 3] Low-Value Entry Cleanup`);
   console.log(`─────────────────────────────────────────`);
   console.log(`[PHASE 3] Archiving memories with 0 access older than ${LOW_VALUE_AGE_DAYS} days (protecting: ${LOW_VALUE_PROTECTED_TIERS.join(', ')})`);
 
+  const sql = getSql();
+
   const result = await sql.begin(async (tx: any) => {
-    await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+    await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
     const staleMemories = await tx`
       SELECT id, content, tier, access_count, created_at
       FROM memory_semantic
-      WHERE agent_id = ${AGENT_ID}
+      WHERE agent_id = ${agentId}
         AND is_archived = false
         AND access_count = 0
         AND created_at < NOW() - INTERVAL '1 day' * ${LOW_VALUE_AGE_DAYS}
@@ -285,24 +314,26 @@ async function phaseLowValueCleanup(): Promise<void> {
   });
 
   console.log(`[PHASE 3] Archived ${result} low-value memories.`);
+  return result;
 }
 
 // =============================================================================
 // PHASE 4: LINK CANDIDATE DISCOVERY & AUTO-LINKING
 // =============================================================================
 
-async function phaseLinkDiscovery(): Promise<void> {
+async function phaseLinkDiscovery(agentId: string, llmUrl: string, llmModel: string): Promise<number> {
   console.log(`\n[PHASE 4] Link Candidate Discovery & Auto-Linking`);
   console.log(`─────────────────────────────────────────`);
   console.log(`[PHASE 4] Similarity range: ${LINK_SIMILARITY_MIN}–${LINK_SIMILARITY_MAX}`);
 
-  // Fetch source memories to scan for link candidates
+  const sql = getSql();
+
   const sourceMemories = await sql.begin(async (tx: any) => {
-    await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+    await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
     return await tx`
       SELECT id, content, embedding
       FROM memory_semantic
-      WHERE agent_id = ${AGENT_ID} AND is_archived = false
+      WHERE agent_id = ${agentId} AND is_archived = false
       ORDER BY created_at DESC
       LIMIT ${LINK_SCAN_LIMIT};
     `;
@@ -310,12 +341,11 @@ async function phaseLinkDiscovery(): Promise<void> {
 
   if (sourceMemories.length < 2) {
     console.log(`[PHASE 4] Not enough memories for link discovery (${sourceMemories.length}).`);
-    return;
+    return 0;
   }
 
   console.log(`[PHASE 4] Scanning ${sourceMemories.length} memories for link candidates...`);
 
-  // Collect all candidate pairs
   interface CandidatePair {
     source_id: string;
     source_content: string;
@@ -328,19 +358,19 @@ async function phaseLinkDiscovery(): Promise<void> {
   const seenPairs = new Set<string>();
 
   await sql.begin(async (tx: any) => {
-    await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+    await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
     for (const source of sourceMemories) {
       const candidates = await tx`
         SELECT m.id, m.content, 1 - (m.embedding <=> ${source.embedding}) AS similarity
         FROM memory_semantic m
-        WHERE m.agent_id = ${AGENT_ID}
+        WHERE m.agent_id = ${agentId}
           AND m.is_archived = false
           AND m.id != ${source.id}
           AND 1 - (m.embedding <=> ${source.embedding}) BETWEEN ${LINK_SIMILARITY_MIN} AND ${LINK_SIMILARITY_MAX}
           AND NOT EXISTS (
             SELECT 1 FROM entity_edges e
-            WHERE e.agent_id = ${AGENT_ID}
+            WHERE e.agent_id = ${agentId}
               AND (
                 (e.source_memory_id = ${source.id} AND e.target_memory_id = m.id)
                 OR (e.source_memory_id = m.id AND e.target_memory_id = ${source.id})
@@ -351,7 +381,6 @@ async function phaseLinkDiscovery(): Promise<void> {
       `;
 
       for (const candidate of candidates) {
-        // Deduplicate bidirectional pairs
         const pairKey = [source.id, candidate.id].sort().join(":");
         if (seenPairs.has(pairKey)) continue;
         seenPairs.add(pairKey);
@@ -369,12 +398,11 @@ async function phaseLinkDiscovery(): Promise<void> {
 
   if (candidatePairs.length === 0) {
     console.log(`[PHASE 4] No new link candidates found.`);
-    return;
+    return 0;
   }
 
   console.log(`[PHASE 4] Found ${candidatePairs.length} candidate pairs. Classifying relationships...`);
 
-  // Process in batches via LLM
   let linksCreated = 0;
 
   for (let i = 0; i < candidatePairs.length; i += LINK_BATCH_SIZE) {
@@ -403,7 +431,7 @@ Use "none" for pairs that don't have a meaningful relationship worth persisting.
 Do not use markdown formatting.
 `;
 
-    const jsonString = await callLLM(systemPrompt, `Classify the relationships between these memory pairs:\n\n${pairsDescription}`);
+    const jsonString = await callLLM(systemPrompt, `Classify the relationships between these memory pairs:\n\n${pairsDescription}`, llmUrl, llmModel);
 
     let classifications: LinkClassification[];
     try {
@@ -413,9 +441,8 @@ Do not use markdown formatting.
       continue;
     }
 
-    // Insert edges for meaningful relationships
     await sql.begin(async (tx: any) => {
-      await tx`SELECT set_config('app.current_agent_id', ${AGENT_ID}, true)`;
+      await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
       for (const cls of classifications) {
         if (cls.relationship === "none" || !cls.relationship) continue;
@@ -423,7 +450,7 @@ Do not use markdown formatting.
         try {
           await tx`
             INSERT INTO entity_edges (agent_id, source_memory_id, target_memory_id, relationship_type, weight)
-            VALUES (${AGENT_ID}, ${cls.source_id}, ${cls.target_id}, ${cls.relationship}, 1.0)
+            VALUES (${agentId}, ${cls.source_id}, ${cls.target_id}, ${cls.relationship}, 1.0)
             ON CONFLICT (source_memory_id, target_memory_id, relationship_type) DO NOTHING;
           `;
           linksCreated++;
@@ -436,37 +463,105 @@ Do not use markdown formatting.
   }
 
   console.log(`[PHASE 4] Created ${linksCreated} new knowledge graph edges.`);
+  return linksCreated;
 }
 
 // =============================================================================
 // MAIN: RUN ALL PHASES
 // =============================================================================
 
-async function runSleepCycle() {
+export async function runSleepCycle(opts: SleepCycleOptions = {}): Promise<SleepCycleStats> {
+  const agentId = opts.agentId || "main";
+  const llmUrl = opts.llmUrl || LM_STUDIO_URL || "http://127.0.0.1:1234/v1";
+  const llmModel = opts.llmModel || "qwen3.5-9b";
+
   console.log(`\n╔══════════════════════════════════════════════════════╗`);
   console.log(`║  SLEEP CYCLE — Knowledge Graph Maintenance Agent    ║`);
-  console.log(`║  Agent: ${AGENT_ID.padEnd(44)}║`);
+  console.log(`║  Agent: ${agentId.padEnd(44)}║`);
   console.log(`╚══════════════════════════════════════════════════════╝`);
 
+  await ensureAgent(agentId);
+
+  const stats: SleepCycleStats = {
+    factsExtracted: 0,
+    duplicatesMerged: 0,
+    staleArchived: 0,
+    linksCreated: 0,
+  };
+
   try {
-    // Phase 1: Consolidate episodic → semantic
-    await phaseConsolidateEpisodic();
+    stats.factsExtracted = await phaseConsolidateEpisodic(agentId, llmUrl, llmModel);
+    stats.duplicatesMerged = await phaseDuplicateDetection(agentId);
+    stats.staleArchived = await phaseLowValueCleanup(agentId);
+    stats.linksCreated = await phaseLinkDiscovery(agentId, llmUrl, llmModel);
 
-    // Phase 2: Find and merge near-duplicate semantic memories
-    await phaseDuplicateDetection();
-
-    // Phase 3: Archive stale low-value entries
-    await phaseLowValueCleanup();
-
-    // Phase 4: Discover and create knowledge graph edges
-    await phaseLinkDiscovery();
-
-    console.log(`\n[SLEEP CYCLE] All phases complete. Going back to sleep. 💤`);
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`  Sleep Cycle Complete 💤`);
+    console.log(`  Facts extracted:   ${stats.factsExtracted}`);
+    console.log(`  Duplicates merged: ${stats.duplicatesMerged}`);
+    console.log(`  Stale archived:    ${stats.staleArchived}`);
+    console.log(`  Links created:     ${stats.linksCreated}`);
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
   } catch (err) {
     console.error("[SLEEP CYCLE] Fatal error during maintenance:", err);
-  } finally {
-    await sql.end();
+  }
+
+  return stats;
+}
+
+// =============================================================================
+// BACKGROUND SERVICE — runs on an interval while the gateway is up
+// =============================================================================
+
+let _serviceTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startService(opts: SleepCycleOptions & { intervalHours?: number } = {}): void {
+  const intervalMs = (opts.intervalHours || DEFAULT_INTERVAL_HOURS) * 60 * 60 * 1000;
+  const label = `${opts.intervalHours || DEFAULT_INTERVAL_HOURS}h`;
+
+  console.log(`[SLEEP SERVICE] Started — will run every ${label} for agent="${opts.agentId || "main"}"`);
+
+  // Run once immediately, then on interval
+  runSleepCycle(opts).catch((err) => console.error("[SLEEP SERVICE] Cycle failed:", err));
+
+  _serviceTimer = setInterval(() => {
+    console.log(`[SLEEP SERVICE] Interval tick — starting cycle`);
+    runSleepCycle(opts).catch((err) => console.error("[SLEEP SERVICE] Cycle failed:", err));
+  }, intervalMs);
+}
+
+export function stopService(): void {
+  if (_serviceTimer) {
+    clearInterval(_serviceTimer);
+    _serviceTimer = null;
+    console.log(`[SLEEP SERVICE] Stopped`);
   }
 }
 
-runSleepCycle();
+// =============================================================================
+// STANDALONE CLI ENTRY POINT
+// =============================================================================
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+
+  function getArg(name: string): string | undefined {
+    const idx = args.indexOf(name);
+    if (idx === -1) return undefined;
+    return args[idx + 1];
+  }
+
+  runSleepCycle({
+    agentId: getArg("--agent-id") || args.find((a) => !a.startsWith("--")),
+    llmUrl: getArg("--llm-url"),
+    llmModel: getArg("--llm-model"),
+  })
+    .then(() => {
+      getSql().end();
+      process.exit(0);
+    })
+    .catch(() => {
+      getSql().end();
+      process.exit(1);
+    });
+}

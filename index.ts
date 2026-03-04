@@ -484,6 +484,108 @@ const openclawPostgresPlugin = {
       },
     );
 
+    // -------------------------------------------------------------------------
+    // CLI — Register `openclaw postclaw setup` command
+    // -------------------------------------------------------------------------
+    api.registerCli(
+      ({ program }: any) => {
+        const postclaw = program.command("postclaw").description("PostClaw database management");
+
+        postclaw
+          .command("setup")
+          .description("Create and initialize the PostClaw PostgreSQL database")
+          .option("--admin-url <url>", "PostgreSQL superuser connection string (default: postgres://localhost/postgres)")
+          .option("--db-name <name>", "Database name (default: memorydb)")
+          .option("--db-user <user>", "App user name (default: openclaw)")
+          .option("--db-password <pass>", "App user password (auto-generated if omitted)")
+          .option("--skip-config", "Don't auto-update openclaw.json with the new dbUrl")
+          .action(async (opts: any) => {
+            const { runSetup } = await import("./scripts/setup-db.js");
+            await runSetup({
+              adminUrl: opts.adminUrl,
+              dbName: opts.dbName,
+              dbUser: opts.dbUser,
+              dbPassword: opts.dbPassword,
+              skipConfig: opts.skipConfig,
+            });
+          });
+
+        postclaw
+          .command("persona")
+          .argument("<file>", "Path to a Markdown persona file (e.g. SOUL.md, AGENTS.md)")
+          .description("Bootstrap a Markdown persona file into the agent_persona table")
+          .option("--agent-id <id>", "Agent ID to store persona under (default: main)")
+          .option("--llm-model <model>", "Chat model to use for chunking (default: agent's primary model)")
+          .action(async (file: string, opts: any) => {
+            // Ensure embedding config is set from OpenClaw config before running
+            const memCfg = api.config?.agents?.defaults?.memorySearch;
+            const llmUrl = memCfg?.remote?.baseUrl || "http://127.0.0.1:1234/v1";
+            const embModel = memCfg?.remote?.model || memCfg?.model || "text-embedding-nomic-embed-text-v2-moe";
+            setEmbeddingConfig(llmUrl, embModel);
+
+            // Apply dbUrl from plugin config
+            const pluginCfg = api.config?.plugins?.entries?.postclaw?.config;
+            if (pluginCfg?.dbUrl) {
+              setDbUrl(pluginCfg.dbUrl);
+            }
+
+            const { bootstrapPersona } = await import("./scripts/bootstrap_persona.js");
+            await bootstrapPersona(file, {
+              agentId: opts.agentId,
+              llmUrl: llmUrl,
+              llmModel: opts.llmModel,
+            });
+          });
+
+        postclaw
+          .command("sleep")
+          .description("Run the sleep cycle (knowledge graph maintenance) manually")
+          .option("--agent-id <id>", "Agent ID to run maintenance for (default: main)")
+          .option("--llm-model <model>", "Chat model to use for consolidation/linking")
+          .action(async (opts: any) => {
+            // Ensure embedding config is set from OpenClaw config before running
+            const memCfg = api.config?.agents?.defaults?.memorySearch;
+            const llmUrl = memCfg?.remote?.baseUrl || "http://127.0.0.1:1234/v1";
+            const embModel = memCfg?.remote?.model || memCfg?.model || "text-embedding-nomic-embed-text-v2-moe";
+            setEmbeddingConfig(llmUrl, embModel);
+
+            // Apply dbUrl from plugin config
+            const pluginCfg = api.config?.plugins?.entries?.postclaw?.config;
+            if (pluginCfg?.dbUrl) {
+              setDbUrl(pluginCfg.dbUrl);
+            }
+
+            const { runSleepCycle } = await import("./scripts/sleep_cycle.js");
+            await runSleepCycle({
+              agentId: opts.agentId,
+              llmUrl: llmUrl,
+              llmModel: opts.llmModel,
+            });
+          });
+      },
+      { commands: ["postclaw"] },
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BACKGROUND SERVICE — Start sleep cycle on an interval
+    // ─────────────────────────────────────────────────────────────────────────
+    const sleepIntervalHours = api.config?.plugins?.entries?.postclaw?.config?.sleepIntervalHours;
+    if (sleepIntervalHours !== 0) {
+      // Start the background sleep cycle service (0 = disabled)
+      import("./scripts/sleep_cycle.js").then(({ startService }) => {
+        const memCfg = api.config?.agents?.defaults?.memorySearch;
+        const llmUrl = memCfg?.remote?.baseUrl || "http://127.0.0.1:1234/v1";
+
+        startService({
+          agentId: "main",
+          llmUrl,
+          intervalHours: sleepIntervalHours || 6,
+        });
+      }).catch((err) => {
+        console.error("[PostClaw] Failed to start sleep service:", err);
+      });
+    }
+
     console.log("[PostClaw] Plugin hooks registered successfully");
   },
 };
