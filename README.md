@@ -15,7 +15,6 @@
 ## Table of Contents
 
 - [Features](#features)
-- [Architecture Overview](#architecture-overview)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
