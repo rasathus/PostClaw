@@ -3,9 +3,8 @@
 // =============================================================================
 
 export { getSql, LM_STUDIO_URL, POSTCLAW_DB_URL, EMBEDDING_MODEL, getEmbedding, hashContent, setEmbeddingConfig, setDbUrl } from "./services/db.js";
-export { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, fetchDynamicTools, storeMemory, updateMemory, linkMemories, storeTool } from "./services/memoryService.js";
+export { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, storeMemory, updateMemory, linkMemories } from "./services/memoryService.js";
 export { listPersonas, getPersona, createPersona, updatePersona, deletePersona } from "./services/personaService.js";
-export type { ChatCompletionTool } from "./services/memoryService.js";
 
 import { getSql } from "./services/db.js";
 import { stopService } from "./scripts/sleep_cycle.js";
@@ -32,7 +31,8 @@ export type { ChatMessage, ContentPart, ToolCallRecord } from "./schemas/validat
 // =============================================================================
 
 const processedEvents = new Set<string>();
-import { getCurrentConfig, loadConfig, setWorkspaceDir } from "./services/config.js";
+import { registerWorkspaceRoutes } from "./dashboard/routes/workspace.js";
+import { getCurrentConfig, loadConfig } from "./services/config.js";
 
 function isDuplicate(key: string): boolean {
   const maxCacheSize = getCurrentConfig().dedup.maxCacheSize;
@@ -48,7 +48,7 @@ let lastReceivedMessage: string = "";
 // =============================================================================
 
 import { getEmbedding, setEmbeddingConfig, setDbUrl } from "./services/db.js";
-import { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, fetchDynamicTools, storeMemory, updateMemory, linkMemories, storeTool } from "./services/memoryService.js";
+import { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, storeMemory, updateMemory, linkMemories } from "./services/memoryService.js";
 import { Type } from "@sinclair/typebox";
 /**
  * Extracts the text content from the last user message in a messages array.
@@ -93,14 +93,13 @@ const openclawPostgresPlugin = {
     const llmModel = memoryConfig?.remote?.model || memoryConfig?.model || "text-embedding-nomic-embed-text-v2-moe";
     setEmbeddingConfig(llmUrl, llmModel);
 
-    // Load PostClaw persistent config
+    const agentId = "main";
     const workspaceDir = api.config?.workspaceDir;
-    if (workspaceDir) {
-      setWorkspaceDir(workspaceDir);
-      loadConfig().then(() => {
+    ensureAgent(agentId, workspaceDir).then(() => {
+      loadConfig(agentId).then(() => {
         console.log("[PostClaw] Configuration loaded successfully");
       });
-    }
+    });
 
     // -------------------------------------------------------------------------
     // before_prompt_build — Prune + replace system prompt, inject RAG context
@@ -134,7 +133,7 @@ const openclawPostgresPlugin = {
           const isHeartbeat = provider === "heartbeat" || provider === "cron";
 
           // Lazy-register the agent if not already in the DB
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
 
           console.log(`[PostClaw] before_prompt_build: "${cleanText.substring(0, 80)}..." (heartbeat=${isHeartbeat}, provider=${provider})`);
 
@@ -163,13 +162,17 @@ const openclawPostgresPlugin = {
           // ==================================================================
           // STEP 2: Inject custom memory architecture rules
           // ==================================================================
-          const config = getCurrentConfig();
+          const config = await loadConfig(agentId);
 
-          sysPrompt += `\n\n${config.prompts.memoryRules}\n`;
-          sysPrompt += `\n\n${config.prompts.personaRules}\n`;
-          
-          const heartbeatPrompt = config.prompts.heartbeatRules.replace("{{heartbeatFilePath}}", config.prompts.heartbeatFilePath);
-          sysPrompt += `\n\n${heartbeatPrompt}\n`;
+          for (const [key, promptValue] of Object.entries(config.prompts)) {
+            // Special case for heartbeat
+            if (key === 'heartbeatRules') {
+               const heartbeatPrompt = promptValue.replace("{{heartbeatFilePath}}", config.prompts.heartbeatFilePath || "/home/cl/.openclaw/workspace/HEARTBEAT.md");
+               sysPrompt += `\n\n${heartbeatPrompt}\n`;
+            } else if (key !== 'heartbeatFilePath') {
+               sysPrompt += `\n\n${promptValue}\n`;
+            }
+          }
 
           // ==================================================================
           // STEP 3: Fetch persona + RAG context from Postgres (in parallel)
@@ -182,14 +185,14 @@ const openclawPostgresPlugin = {
 
             const [memoryContext, personaContext] = await Promise.all([
               // RAG: only when we have user text to search against
-              hasUserText ? searchPostgres(agentId, cleanText, { 
+              hasUserText ? searchPostgres(agentId, cleanText, {
                 semanticLimit: config.rag.semanticLimit,
                 linkedSimilarity: config.rag.linkedSimilarity,
                 totalLimit: config.rag.totalLimit
               }) : Promise.resolve(null),
               // Persona: always fetch (core rules work without embedding)
-              fetchPersonaContext(agentId, embedding, { 
-                situationalLimit: config.persona.situationalLimit 
+              fetchPersonaContext(agentId, embedding, {
+                situationalLimit: config.persona.situationalLimit
               }),
             ]);
 
@@ -242,9 +245,9 @@ const openclawPostgresPlugin = {
         parameters: Type.Object({
           query: Type.String({ description: "Natural language search query" }),
         }),
-        async execute(_toolCallId: string, args: { query: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: { query: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
           const config = getCurrentConfig();
           const result = await searchPostgres(agentId, args.query, {
             semanticLimit: config.rag.semanticLimit,
@@ -270,9 +273,9 @@ const openclawPostgresPlugin = {
           tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily" })),
           metadata: Type.Optional(Type.Any({ description: "A JSON object of additional contextual key-value pairs" }))
         }),
-        async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
           const { content, scope, ...options } = args;
           const result = await storeMemory(agentId, content, scope, options);
           return JSON.stringify(result);
@@ -294,9 +297,9 @@ const openclawPostgresPlugin = {
           tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily" })),
           metadata: Type.Optional(Type.Any({ description: "A JSON object of additional contextual key-value pairs" }))
         }),
-        async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
           const { old_memory_id, new_fact, ...options } = args;
           const result = await updateMemory(agentId, old_memory_id, new_fact, options);
           return JSON.stringify(result);
@@ -315,34 +318,14 @@ const openclawPostgresPlugin = {
           target_id: Type.String({ description: "UUID of the target memory" }),
           relationship: Type.String({ description: "Relationship type (e.g. related_to, elaborates, contradicts, depends_on, part_of)" }),
         }),
-        async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
           const result = await linkMemories(agentId, args.source_id, args.target_id, args.relationship);
           return JSON.stringify(result);
         },
       },
       { names: ["memory_link"] },
-    );
-
-    // --- tool_store: Store or update a tool schema definition ---
-    api.registerTool(
-      {
-        name: "tool_store",
-        description: "Store or update a tool definition in the environment context database, so it can be dynamically loaded for future conversations.",
-        parameters: Type.Object({
-          tool_name: Type.String({ description: "Unique name for the tool" }),
-          tool_json: Type.String({ description: "Full JSON schema definition of the tool" }),
-          scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { description: "Visibility scope. Default: private", default: "private" })),
-        }),
-        async execute(_toolCallId: string, args: { tool_name: string; tool_json: string; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
-          const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
-          const result = await storeTool(agentId, args.tool_name, args.tool_json, args.scope);
-          return JSON.stringify(result);
-        },
-      },
-      { names: ["tool_store"] },
     );
 
     // --- persona_list: List all persona entries ---
@@ -351,9 +334,9 @@ const openclawPostgresPlugin = {
         name: "persona_list",
         description: "List all persona rules for the current agent.",
         parameters: Type.Object({}),
-        async execute(_toolCallId: string, _args: Record<string, never>, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, _args: Record<string, never>, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
           const personas = await listPersonas(agentId);
           return JSON.stringify(personas);
         },
@@ -369,9 +352,9 @@ const openclawPostgresPlugin = {
         parameters: Type.Object({
           persona_id: Type.String({ description: "UUID of the persona entry" }),
         }),
-        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
           const persona = await getPersona(agentId, args.persona_id);
           return persona ? JSON.stringify(persona) : "Persona not found.";
         },
@@ -390,9 +373,9 @@ const openclawPostgresPlugin = {
           content: Type.Optional(Type.String({ description: "New content text" })),
           is_always_active: Type.Optional(Type.Boolean({ description: "Whether this rule is always injected" })),
         }),
-        async execute(_toolCallId: string, args: { persona_id: string; category?: string; content?: string; is_always_active?: boolean }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: { persona_id: string; category?: string; content?: string; is_always_active?: boolean }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
           const { persona_id, ...updates } = args;
           const result = await updatePersona(agentId, persona_id, updates);
           return result ? JSON.stringify(result) : "Persona not found.";
@@ -409,9 +392,9 @@ const openclawPostgresPlugin = {
         parameters: Type.Object({
           persona_id: Type.String({ description: "UUID of the persona entry to delete" }),
         }),
-        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
+        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
           const deleted = await deletePersona(agentId, args.persona_id);
           return deleted ? '{"status": "deleted"}' : "Persona not found.";
         },
@@ -436,7 +419,7 @@ const openclawPostgresPlugin = {
           const isHeartbeat = provider === "heartbeat" || provider === "cron";
 
           // Lazy-register the agent if not already in the DB
-          await ensureAgent(agentId);
+          await ensureAgent(agentId, ctx.workspaceDir);
 
           console.log(`[PostClaw] agent_end: ${messages.length} messages, success=${event.success}, provider=${provider}`);
 
@@ -655,7 +638,6 @@ const openclawPostgresPlugin = {
             startDashboard({
               port: opts.port ? parseInt(opts.port, 10) : undefined,
               bindAddress: opts.bind,
-              workspaceDir: api.config?.workspaceDir,
             });
             console.log("[PostClaw] Dashboard running. Press Ctrl+C to stop.");
           });
@@ -690,8 +672,9 @@ const openclawPostgresPlugin = {
         startDashboard({
           port: pluginConfig?.dashboardPort,
           bindAddress: pluginConfig?.dashboardBindAddress,
-          workspaceDir: api.config?.workspaceDir,
         });
+        // Build router and register all routes
+        registerWorkspaceRoutes(api.router);
       }).catch((err) => {
         console.error("[PostClaw] Failed to start dashboard:", err);
       });

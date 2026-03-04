@@ -264,8 +264,7 @@ window.memNext = () => { memoryPage++; loadMemories(); };
 
 window.editMemory = async function(id) {
   try {
-    const result = await api("GET", `/api/memories?limit=1&search=`);
-    const mem = result.memories.find(m => m.id === id);
+    const mem = await api("GET", `/api/memories/${id}`);
     if (!mem) return toast("Memory not found", "error");
     $("memory-form-id").value = id;
     $("memory-content").value = mem.content;
@@ -662,8 +661,6 @@ async function loadConfig() {
 
     // Persona
     $("cfg-persona-situational-limit").value = config.persona.situationalLimit;
-    $("cfg-tools-similarity").value = config.dynamicTools.similarityThreshold;
-    $("cfg-tools-max").value = config.dynamicTools.maxTools;
 
     // Prompts
     $("cfg-prompt-memory").value = config.prompts.memoryRules;
@@ -692,10 +689,6 @@ $("btn-save-config").addEventListener("click", async () => {
     },
     persona: {
       situationalLimit: parseInt($("cfg-persona-situational-limit").value)
-    },
-    dynamicTools: {
-      similarityThreshold: parseFloat($("cfg-tools-similarity").value),
-      maxTools: parseInt($("cfg-tools-max").value)
     },
     prompts: {
       memoryRules: $("cfg-prompt-memory").value,

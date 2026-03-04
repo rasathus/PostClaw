@@ -15,16 +15,18 @@ import {
 
 const registeredAgents = new Set<string>();
 
-/**
- * Ensure the given agentId exists in the agents table.
- * Uses an in-memory cache so we only hit the DB once per agent per process lifetime.
- */
-export async function ensureAgent(agentId: string): Promise<void> {
-  if (!agentId || registeredAgents.has(agentId)) return;
+export async function ensureAgent(agentId: string, workspaceDir?: string): Promise<void> {
+  if (!agentId) return;
   try {
-    await getSql()`INSERT INTO agents (id, name) VALUES (${agentId}, ${agentId}) ON CONFLICT DO NOTHING`;
+    const sql = getSql();
+    await sql`
+      INSERT INTO agents (id, name, workspace_dir) 
+      VALUES (${agentId}, ${agentId}, ${workspaceDir || null}) 
+      ON CONFLICT (id) DO UPDATE SET 
+        workspace_dir = EXCLUDED.workspace_dir
+      WHERE EXCLUDED.workspace_dir IS NOT NULL
+    `;
     registeredAgents.add(agentId);
-    console.log(`[AGENTS] Registered agent: ${agentId}`);
   } catch (err) {
     console.error(`[AGENTS] Failed to register agent ${agentId}:`, err);
   }
@@ -251,49 +253,6 @@ export async function fetchPersonaContext(
 }
 
 // =============================================================================
-// DYNAMIC TOOLS
-// =============================================================================
-
-// ChatCompletionTool type is now imported from schemas/validation.ts
-export type { ChatCompletionTool } from "../schemas/validation.js";
-
-/**
- * Fetch dynamic tools from context_environment based on embedding similarity.
- */
-export async function fetchDynamicTools(
-  agentId: string, 
-  embedding: number[],
-  options: { similarityThreshold?: number; maxTools?: number } = {}
-): Promise<ChatCompletionTool[]> {
-  let dynamicTools: ChatCompletionTool[] = [];
-  const similarityThreshold = options.similarityThreshold ?? 0.35;
-  const maxTools = options.maxTools ?? 3;
-
-  try {
-    await getSql().begin(async (tx: any) => {
-      await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
-
-      const results = await tx`
-        SELECT tool_name, context_data, 1 - (embedding <=> ${JSON.stringify(embedding)}) AS similarity
-        FROM context_environment
-        WHERE 1 - (embedding <=> ${JSON.stringify(embedding)}) > ${similarityThreshold}
-        ORDER BY similarity DESC
-        LIMIT ${maxTools};
-      `;
-
-      if (results.length > 0) {
-        dynamicTools = results.map((r: { context_data: string }) => JSON.parse(r.context_data) as ChatCompletionTool);
-        console.log(`[TOOLS] 🔧 Loaded ${dynamicTools.length} dynamic tool(s): ${dynamicTools.map(t => t.function.name).join(", ")}`);
-      }
-    });
-  } catch (err) {
-    console.error("[TOOLS] Failed to fetch dynamic tools:", err);
-  }
-
-  return dynamicTools;
-}
-
-// =============================================================================
 // MEMORY STORE (replaces db-memory-store skill)
 // MemoryOptions type is now imported from schemas/validation.ts
 
@@ -439,44 +398,3 @@ export async function linkMemories(agentId: string,
   }
 }
 
-// =============================================================================
-// TOOL STORE (replaces db-tool-store skill)
-// =============================================================================
-
-/**
- * Store or update a tool definition in context_environment.
- */
-export async function storeTool(agentId: string,
-  toolName: string,
-  toolJson: string,
-  scope: "private" | "shared" | "global" = "private"
-): Promise<{ status: string }> {
-  try {
-    const toolObj = JSON.parse(toolJson);
-    const description = toolObj.function?.description || toolObj.description || "";
-    const embedText = `${toolName}: ${description}`;
-    const embedding = await getEmbedding(embedText);
-
-    await getSql().begin(async (tx: any) => {
-      await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
-
-      await tx`
-        INSERT INTO context_environment (
-          agent_id, access_scope, tool_name, context_data, embedding
-        ) VALUES (
-          ${agentId}, ${scope}, ${toolName}, ${toolJson}, ${JSON.stringify(embedding)}
-        )
-        ON CONFLICT (agent_id, tool_name) DO UPDATE SET
-          context_data = EXCLUDED.context_data,
-          embedding = EXCLUDED.embedding,
-          access_scope = EXCLUDED.access_scope;
-      `;
-    });
-
-    console.log(`[TOOLS] Stored/updated tool schema: ${toolName}`);
-    return { status: "stored" };
-  } catch (err) {
-    console.error("[TOOLS] Failed to store tool:", err);
-    return { status: `error: ${err}` };
-  }
-}

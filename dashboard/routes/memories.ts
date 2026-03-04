@@ -140,6 +140,26 @@ export function registerMemoryRoutes(router: Router): void {
     }
   });
 
+  // GET ONE
+  router.get("/api/memories/:id", async (_req, res, ctx) => {
+    const agentId = ctx.query.agentId || "main";
+    const sql = getSql();
+
+    const rows = await sql.begin(async (tx: any) => {
+      await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
+      return await tx`
+        SELECT id, content, category, tier, access_scope,
+               access_count, usefulness_score, is_archived, is_pointer,
+               confidence, metadata, created_at, updated_at, expires_at
+        FROM memory_semantic
+        WHERE id = ${ctx.params.id} AND agent_id = ${agentId}
+      `;
+    });
+
+    if (rows.length === 0) return sendError(res, 404, "Memory not found");
+    sendJson(res, 200, { ok: true, data: rows[0] });
+  });
+
   // DELETE (archive)
   router.delete("/api/memories/:id", async (_req, res, ctx) => {
     const agentId = ctx.query.agentId || "main";
