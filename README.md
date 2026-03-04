@@ -57,7 +57,7 @@
    ```json
         "tools": {
             "profile": "messaging",
-            "alsoAllow": ["postclaw"]
+            "alsoAllow": ["postclaw"] // OR group:plugins if you have other plugins installed.
           },
    ```
 
