@@ -381,9 +381,10 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
         adminSql = postgres(adminUrl, { max: 1 });
         await adminSql`SELECT 1`;
         log("✅", `Connected to Postgres as superuser`);
-    } catch (err: any) {
+    } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
         log("❌", `Cannot connect to ${adminUrl}`);
-        log("", `Error: ${err.message}`);
+        log("", `Error: ${msg}`);
         log("", `Try: openclaw postclaw setup --admin-url postgres://postgres:PASSWORD@localhost/postgres`);
         throw new Error("Superuser connection failed");
     }
@@ -400,8 +401,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
             await adminSql.unsafe(`CREATE DATABASE ${dbName}`);
             log("✅", `Created database '${dbName}'`);
         }
-    } catch (err: any) {
-        log("❌", `Failed to create database: ${err.message}`);
+    } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+        log("❌", `Failed to create database: ${msg}`);
         await adminSql.end();
         throw err;
     }
@@ -420,8 +422,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
             log("✅", `Created user '${appUser}'`);
         }
         await adminSql.unsafe(`GRANT CONNECT ON DATABASE ${dbName} TO ${appUser}`);
-    } catch (err: any) {
-        log("❌", `Failed to create user: ${err.message}`);
+    } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+        log("❌", `Failed to create user: ${msg}`);
         await adminSql.end();
         throw err;
     }
@@ -439,8 +442,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
             log("✅", `Created role 'system_admin'`);
         }
         await adminSql.unsafe(`ALTER ROLE system_admin BYPASSRLS`);
-    } catch (err: any) {
-        log("⚠️", `system_admin role setup warning: ${err.message}`);
+    } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+        log("⚠️", `system_admin role setup warning: ${msg}`);
         // Non-fatal — continue without it
     }
 
@@ -456,8 +460,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
         dbSql = postgres(targetUrl, { max: 1 });
         await dbSql`SELECT 1`;
         log("✅", `Connected to '${dbName}'`);
-    } catch (err: any) {
-        log("❌", `Cannot connect to database '${dbName}': ${err.message}`);
+    } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+        log("❌", `Cannot connect to database '${dbName}': ${msg}`);
         throw err;
     }
 
@@ -465,8 +470,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
         const schemaSql = buildSchemaSql(appUser, appPassword);
         await dbSql.unsafe(schemaSql);
         log("✅", `Schema created (6 tables, 14 indices, 18 RLS policies)`);
-    } catch (err: any) {
-        log("❌", `Schema creation failed: ${err.message}`);
+    } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+        log("❌", `Schema creation failed: ${msg}`);
         await dbSql.end();
         throw err;
     }
@@ -475,8 +481,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
     try {
         await dbSql.unsafe(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO system_admin`);
         log("✅", `Granted permissions`);
-    } catch (err: any) {
-        log("⚠️", `system_admin grants warning: ${err.message}`);
+    } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+        log("⚠️", `system_admin grants warning: ${msg}`);
     }
 
     await dbSql.end();
@@ -503,8 +510,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
                     config.plugins.entries.postclaw.config.dbUrl = appDbUrl;
                     writeFileSync(cfgPath, JSON.stringify(config, null, 2) + "\n");
                     log("✅", `Updated ${cfgPath} with dbUrl`);
-                } catch (err: any) {
-                    log("⚠️", `Could not update ${cfgPath}: ${err.message}`);
+                } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+                    log("⚠️", `Could not update ${cfgPath}: ${msg}`);
                 }
                 break;
             }

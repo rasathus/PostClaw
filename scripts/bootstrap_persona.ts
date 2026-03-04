@@ -17,14 +17,10 @@ import { resolve } from "path";
 import { getSql, getEmbedding, setEmbeddingConfig, LM_STUDIO_URL, EMBEDDING_MODEL } from "../services/db.js";
 import { ensureAgent } from "../services/memoryService.js";
 import { callLLMviaAgent } from "../services/llm.js";
+import { z } from "zod";
+import { PersonaChunkSchema, type PersonaChunk } from "../schemas/validation.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-interface PersonaChunk {
-  category: string;
-  content: string;
-  is_always_active: boolean;
-}
+// PersonaChunk type is now imported from schemas/validation.ts
 
 // ─── LLM Chunking ───────────────────────────────────────────────────────────
 
@@ -50,9 +46,9 @@ Each object must have:
   const jsonString = await callLLMviaAgent(combined);
 
   try {
-    return JSON.parse(jsonString) as PersonaChunk[];
+    return z.array(PersonaChunkSchema).parse(JSON.parse(jsonString));
   } catch (e) {
-    console.error("  ❌  Failed to parse LLM output as JSON:", jsonString.substring(0, 200));
+    console.error("  ❌  Failed to parse/validate LLM output:", jsonString.substring(0, 200));
     throw e;
   }
 }
@@ -81,8 +77,9 @@ export async function bootstrapPersona(
   try {
     markdownText = await readFile(absPath, "utf-8");
     console.log(`  ✅  Read ${filename} (${markdownText.length} chars)`);
-  } catch (err: any) {
-    console.error(`  ❌  Cannot read file: ${err.message}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`  ❌  Cannot read file: ${msg}`);
     throw err;
   }
 
@@ -120,8 +117,9 @@ export async function bootstrapPersona(
         `;
       });
       stored++;
-    } catch (err: any) {
-      console.error(`  ⚠️  Failed to store "${chunk.category}": ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`  ⚠️  Failed to store "${chunk.category}": ${msg}`);
     }
   }
 

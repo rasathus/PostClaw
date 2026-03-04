@@ -1,41 +1,33 @@
-import postgres from "postgres";
 import { readFile } from "fs/promises";
-import { POSTCLAW_DB_URL, LM_STUDIO_URL } from "../services/db.js";
+import { getSql, getEmbedding } from "../services/db.js";
+import { PromptJsonSchema, type ToolDefinition } from "../schemas/validation.js";
 
-const sql = postgres(POSTCLAW_DB_URL!);
+const sql = getSql();
 const AGENT_ID = process.env.AGENT_ID || "default_agent";
 
 // The tools we ALWAYS want in the payload (handled by the pruner)
 const CORE_TOOLS = ["read", "write", "edit", "exec", "process", "session_status"];
 
-async function getEmbedding(text: string): Promise<number[]> {
-  const res = await fetch(`${LM_STUDIO_URL}/v1/embeddings`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ input: text, model: "text-embedding-nomic-embed-text-v2-moe" }),
-  });
-  const data: any = await res.json();
-  return data.data[0].embedding;
-}
-
 async function bootstrapTools(promptFilePath: string) {
   try {
-    const rawData = await readFile(promptFilePath, "utf-8");
-    const promptJson = JSON.parse(rawData);
-
-    if (!promptJson.tools || !Array.isArray(promptJson.tools)) {
-      console.log("No tools array found in the provided JSON.");
-      return;
-    }
+    const promptRaw = await readFile(promptFilePath, "utf-8");
+    const promptJson = PromptJsonSchema.parse(JSON.parse(promptRaw));
+    const tools: ToolDefinition[] = promptJson.tools;
+    console.log(`[BOOTSTRAP] Found ${tools.length} tool(s) in prompt.json`);
 
     // Filter out the core tools, we only want to store the heavy/situational ones
-    const situationalTools = promptJson.tools.filter((t: any) => !CORE_TOOLS.includes(t.function.name));
-    console.log(`[BOOTSTRAP] Found ${situationalTools.length} situational tools to store.`);
+    const situationalTools = tools.filter((t) => !CORE_TOOLS.includes(t.function.name));
+    console.log(`[BOOTSTRAP] Storing ${situationalTools.length} situational tools.`);
 
     for (const tool of situationalTools) {
-      const toolName = tool.function.name;
+      const fn = tool.function;
+      if (!fn || !fn.name) {
+        console.warn("[BOOTSTRAP] Skipping tool with no function.name");
+        continue;
+      }
+      const toolName = fn.name;
       // Embed the name + description so semantic search can find it based on user intent
-      const embedText = `${toolName}: ${tool.function.description}`;
+      const embedText = `${toolName}: ${fn.description || ""}`;
       console.log(`[DB] Generating embedding for tool: ${toolName}...`);
       const embedding = await getEmbedding(embedText);
 

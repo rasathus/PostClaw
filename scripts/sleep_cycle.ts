@@ -17,6 +17,17 @@
 import { getSql, getEmbedding, LM_STUDIO_URL } from "../services/db.js";
 import { ensureAgent } from "../services/memoryService.js";
 import { callLLMviaAgent } from "../services/llm.js";
+import { z } from "zod";
+import {
+  SleepCycleResultSchema,
+  LinkClassificationSchema,
+  type SleepCycleResult,
+  type LinkClassification,
+  type EpisodicRow,
+  type MemorySemanticRow,
+  type DuplicateCandidateRow,
+  type StaleMemoryRow,
+} from "../schemas/validation.js";
 
 // =============================================================================
 // CONFIGURATION — All thresholds are easily tunable here
@@ -47,16 +58,7 @@ const DEFAULT_INTERVAL_HOURS = 6;
 // TYPES
 // =============================================================================
 
-interface SleepCycleResult {
-  session_summary: string;
-  extracted_durable_facts: string[];
-}
-
-interface LinkClassification {
-  source_id: string;
-  target_id: string;
-  relationship: string;
-}
+// SleepCycleResult and LinkClassification types are now imported from schemas
 
 export interface SleepCycleOptions {
   agentId?: string;
@@ -104,7 +106,10 @@ async function phaseConsolidateEpisodic(agentId: string): Promise<number> {
   console.log(`[PHASE 1] Found ${episodes.length} episodic events to consolidate.`);
 
   const transcript = episodes
-    .map((e: any) => `[${e.created_at}] [${e.event_type.toUpperCase()}]: ${e.event_summary}`)
+    .map((e: Record<string, unknown>) => {
+      const row = e as EpisodicRow;
+      return `[${row.created_at}] [${row.event_type.toUpperCase()}]: ${row.event_summary}`;
+    })
     .join("\n");
 
   const systemPrompt = `
@@ -124,7 +129,7 @@ Do not use markdown formatting.
 `;
 
   const jsonString = await callLLMviaAgent(`${systemPrompt}\n\nHere is the recent episodic transcript to analyze:\n\n${transcript}`);
-  const result: SleepCycleResult = JSON.parse(jsonString);
+  const result: SleepCycleResult = SleepCycleResultSchema.parse(JSON.parse(jsonString));
 
   console.log(`[PHASE 1] Extracted ${result.extracted_durable_facts.length} permanent facts.`);
   console.log(`[PHASE 1] Session Summary: ${result.session_summary}`);
@@ -148,7 +153,7 @@ Do not use markdown formatting.
       console.log(`[PHASE 1] -> Saved durable fact: "${fact}"`);
     }
 
-    const episodeIds = episodes.map((e: any) => e.id);
+    const episodeIds = (episodes as EpisodicRow[]).map((e) => e.id);
     await tx`
       UPDATE memory_episodic
       SET is_archived = true
@@ -213,9 +218,11 @@ async function phaseDuplicateDetection(agentId: string): Promise<number> {
       if (duplicates.length === 0) continue;
 
       const allCandidates = [source, ...duplicates];
-      allCandidates.sort((a: any, b: any) => {
-        const scoreA = (a.usefulness_score || 0) + (a.access_count || 0) * 0.1;
-        const scoreB = (b.usefulness_score || 0) + (b.access_count || 0) * 0.1;
+      allCandidates.sort((a, b) => {
+        const rowA = a as DuplicateCandidateRow;
+        const rowB = b as DuplicateCandidateRow;
+        const scoreA = (rowA.usefulness_score || 0) + (rowA.access_count || 0) * 0.1;
+        const scoreB = (rowB.usefulness_score || 0) + (rowB.access_count || 0) * 0.1;
         return scoreB - scoreA;
       });
 
@@ -270,14 +277,14 @@ async function phaseLowValueCleanup(agentId: string): Promise<number> {
       return 0;
     }
 
-    const staleIds = staleMemories.map((m: any) => m.id);
+    const staleIds = staleMemories.map((m: { id: string }) => m.id);
     await tx`
       UPDATE memory_semantic
       SET is_archived = true
       WHERE id IN ${sql(staleIds)};
     `;
 
-    for (const m of staleMemories) {
+    for (const m of staleMemories as StaleMemoryRow[]) {
       console.log(`[PHASE 3] -> Archived stale: "${m.content.substring(0, 60)}..." (tier=${m.tier}, age=${Math.round((Date.now() - new Date(m.created_at).getTime()) / 86400000)}d)`);
     }
 
@@ -406,7 +413,7 @@ Do not use markdown formatting.
 
     let classifications: LinkClassification[];
     try {
-      classifications = JSON.parse(jsonString);
+      classifications = z.array(LinkClassificationSchema).parse(JSON.parse(jsonString));
     } catch {
       console.error(`[PHASE 4] Failed to parse LLM response for batch ${Math.floor(i / LINK_BATCH_SIZE) + 1}. Skipping.`);
       continue;

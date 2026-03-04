@@ -1,6 +1,8 @@
 import postgres from "postgres";
 import { createHash } from "node:crypto";
 import "dotenv/config";
+import { EmbeddingApiResponseSchema } from "../schemas/validation.js";
+
 
 // =============================================================================
 // CONFIG
@@ -82,13 +84,14 @@ export async function getEmbedding(text: string): Promise<number[]> {
     throw new Error(`Embedding API error: ${res.status} ${res.statusText}`);
   }
 
-  const data: any = await res.json();
+  const raw: unknown = await res.json();
+  const parsed = EmbeddingApiResponseSchema.safeParse(raw);
 
-  if (!data?.data?.[0]?.embedding) {
-    throw new Error(`[EMBED] Unexpected API response (missing data.data[0].embedding). URL: ${baseUrl}/v1/embeddings — Response: ${JSON.stringify(data).substring(0, 300)}`);
+  if (!parsed.success) {
+    throw new Error(`[EMBED] Unexpected API response. URL: ${baseUrl}/v1/embeddings — Errors: ${parsed.error.message}`);
   }
 
-  const embedding: number[] = data.data[0].embedding;
+  const embedding = parsed.data.data[0].embedding;
 
   console.log(`[EMBED] Generated ${embedding.length}-dim vector for: "${text.substring(0, 50)}..."`);
   return embedding;

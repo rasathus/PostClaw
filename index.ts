@@ -8,36 +8,21 @@ export type { ChatCompletionTool } from "./services/memoryService.js";
 
 import { getSql } from "./services/db.js";
 import { stopService } from "./scripts/sleep_cycle.js";
+import {
+  type ChatMessage,
+  type ContentPart,
+  type ToolCallRecord,
+  type PromptBuildEvent,
+  type PromptBuildCtx,
+  type AgentEndEvent,
+  type AgentEndCtx,
+  type MessageReceivedEvent,
+  type MemoryStoreArgs,
+  type MemoryUpdateArgs,
+} from "./schemas/validation.js";
 
-// =============================================================================
-// TYPES
-// =============================================================================
-
-/** A single message in the OpenAI chat format. */
-export interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string | ContentPart[] | null;
-  tool_calls?: ToolCallRecord[];
-  tool_call_id?: string;
-  name?: string;
-}
-
-/** Multimodal content part (text, image, etc). */
-export interface ContentPart {
-  type: string;
-  text?: string;
-  image_url?: { url: string };
-}
-
-/** A tool call record attached to an assistant message. */
-export interface ToolCallRecord {
-  id?: string;
-  type?: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
+// Re-export schema types for downstream consumers
+export type { ChatMessage, ContentPart, ToolCallRecord } from "./schemas/validation.js";
 
 // =============================================================================
 // IN-MEMORY DEDUPLICATION
@@ -63,7 +48,6 @@ function isDuplicate(key: string): boolean {
 import { getEmbedding, setEmbeddingConfig, setDbUrl } from "./services/db.js";
 import { ensureAgent, searchPostgres, logEpisodicMemory, logEpisodicToolCall, fetchPersonaContext, fetchDynamicTools, storeMemory, updateMemory, linkMemories, storeTool } from "./services/memoryService.js";
 import { Type } from "@sinclair/typebox";
-
 /**
  * Extracts the text content from the last user message in a messages array.
  */
@@ -126,7 +110,7 @@ const openclawPostgresPlugin = {
     // -------------------------------------------------------------------------
     api.on(
       "before_prompt_build",
-      async (event: any, ctx: any) => {
+      async (event: PromptBuildEvent, ctx: PromptBuildCtx) => {
         try {
           const messages: ChatMessage[] = event.messages ?? [];
           const userText = lastReceivedMessage || extractUserText(messages);
@@ -256,7 +240,7 @@ const openclawPostgresPlugin = {
         parameters: Type.Object({
           query: Type.String({ description: "Natural language search query" }),
         }),
-        async execute(_toolCallId: string, args: { query: string }, _signal: any, _onUpdate: any, ctx: any) {
+        async execute(_toolCallId: string, args: { query: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId);
           const result = await searchPostgres(agentId, args.query);
@@ -279,7 +263,7 @@ const openclawPostgresPlugin = {
           tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily" })),
           metadata: Type.Optional(Type.Any({ description: "A JSON object of additional contextual key-value pairs" }))
         }),
-        async execute(_toolCallId: string, args: any, _signal: any, _onUpdate: any, ctx: any) {
+        async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId);
           const { content, scope, ...options } = args;
@@ -303,7 +287,7 @@ const openclawPostgresPlugin = {
           tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily" })),
           metadata: Type.Optional(Type.Any({ description: "A JSON object of additional contextual key-value pairs" }))
         }),
-        async execute(_toolCallId: string, args: any, _signal: any, _onUpdate: any, ctx: any) {
+        async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId);
           const { old_memory_id, new_fact, ...options } = args;
@@ -324,7 +308,7 @@ const openclawPostgresPlugin = {
           target_id: Type.String({ description: "UUID of the target memory" }),
           relationship: Type.String({ description: "Relationship type (e.g. related_to, elaborates, contradicts, depends_on, part_of)" }),
         }),
-        async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: any, _onUpdate: any, ctx: any) {
+        async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId);
           const result = await linkMemories(agentId, args.source_id, args.target_id, args.relationship);
@@ -344,7 +328,7 @@ const openclawPostgresPlugin = {
           tool_json: Type.String({ description: "Full JSON schema definition of the tool" }),
           scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { description: "Visibility scope. Default: private", default: "private" })),
         }),
-        async execute(_toolCallId: string, args: { tool_name: string; tool_json: string; scope?: "private" | "shared" | "global" }, _signal: any, _onUpdate: any, ctx: any) {
+        async execute(_toolCallId: string, args: { tool_name: string; tool_json: string; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId);
           const result = await storeTool(agentId, args.tool_name, args.tool_json, args.scope);
@@ -363,7 +347,7 @@ const openclawPostgresPlugin = {
     // -------------------------------------------------------------------------
     api.on(
       "agent_end",
-      async (event: any, ctx: any) => {
+      async (event: AgentEndEvent, ctx: AgentEndCtx) => {
         try {
           const messages: ChatMessage[] = event.messages ?? [];
           const agentId = ctx.agentId;
@@ -466,7 +450,7 @@ const openclawPostgresPlugin = {
     // -------------------------------------------------------------------------
     api.on(
       "message_received",
-      async (event: any, _ctx: any) => {
+      async (event: MessageReceivedEvent, _ctx: unknown) => {
         try {
           const content = event.content;
           if (!content || typeof content !== "string" || !content.trim()) return;
@@ -491,7 +475,7 @@ const openclawPostgresPlugin = {
     // CLI — Register `openclaw postclaw setup` command
     // -------------------------------------------------------------------------
     api.registerCli(
-      ({ program }: any) => {
+      ({ program }: { program: any }) => {
         const postclaw = program.command("postclaw").description("PostClaw database management");
 
         postclaw
@@ -502,7 +486,7 @@ const openclawPostgresPlugin = {
           .option("--db-user <user>", "App user name (default: openclaw)")
           .option("--db-password <pass>", "App user password (auto-generated if omitted)")
           .option("--skip-config", "Don't auto-update openclaw.json with the new dbUrl")
-          .action(async (opts: any) => {
+          .action(async (opts: { adminUrl?: string; dbName?: string; dbUser?: string; dbPassword?: string; skipConfig?: boolean }) => {
             const { runSetup } = await import("./scripts/setup-db.js");
             await runSetup({
               adminUrl: opts.adminUrl,
@@ -522,7 +506,7 @@ const openclawPostgresPlugin = {
           .argument("<file>", "Path to a Markdown persona file (e.g. SOUL.md, AGENTS.md)")
           .description("Bootstrap a Markdown persona file into the agent_persona table")
           .option("--agent-id <id>", "Agent ID to store persona under (default: main)")
-          .action(async (file: string, opts: any) => {
+          .action(async (file: string, opts: { agentId?: string }) => {
             // Ensure embedding config is set from OpenClaw config before running
             const memCfg = api.config?.agents?.defaults?.memorySearch;
             const llmUrl = memCfg?.remote?.baseUrl || "http://127.0.0.1:1234/v1";
@@ -549,7 +533,7 @@ const openclawPostgresPlugin = {
           .command("sleep")
           .description("Run the sleep cycle (knowledge graph maintenance) manually")
           .option("--agent-id <id>", "Agent ID to run maintenance for (default: main)")
-          .action(async (opts: any) => {
+          .action(async (opts: { agentId?: string }) => {
             // Ensure embedding config is set from OpenClaw config before running
             const memCfg = api.config?.agents?.defaults?.memorySearch;
             const llmUrl = memCfg?.remote?.baseUrl || "http://127.0.0.1:1234/v1";

@@ -1,6 +1,13 @@
 import { getSql, EMBEDDING_MODEL, getEmbedding, hashContent } from "./db.js";
 import { z } from "zod";
-import { StoreMemoryInputSchema, UpdateMemoryInputSchema } from "../schemas/validation.js";
+import {
+  StoreMemoryInputSchema,
+  UpdateMemoryInputSchema,
+  type MemoryOptions,
+  type SearchResultRow,
+  type PersonaRow,
+  type ChatCompletionTool,
+} from "../schemas/validation.js";
 
 // =============================================================================
 // LAZY AGENT AUTO-REGISTRATION
@@ -37,6 +44,8 @@ export async function searchPostgres(agentId: string, userText: string): Promise
   try {
     const embedding = await getEmbedding(userText);
 
+    // Note: postgres.js TransactionSql loses call signatures via Omit<Sql, ...>,
+    // so we must use `any` for the tx callback parameter.
     await getSql().begin(async (tx: any) => {
       await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
@@ -68,8 +77,8 @@ export async function searchPostgres(agentId: string, userText: string): Promise
       console.log(`[SEARCH] Query returned ${results.length} row(s) for agent=${agentId}`);
 
       if (results.length > 0) {
-        contextString = results
-          .map((r: any) => {
+        contextString = (results as SearchResultRow[])
+          .map((r) => {
             const pct = (r.similarity * 100).toFixed(1) + "%";
             const label = r.relationship_type
               ? `Linked: ${r.relationship_type}, ${pct}`
@@ -79,7 +88,7 @@ export async function searchPostgres(agentId: string, userText: string): Promise
           .join("\n");
 
         // Update tracking columns
-        const extractedIds = results.map((r: any) => r.id);
+        const extractedIds = (results as SearchResultRow[]).map((r) => r.id);
         await tx`
           UPDATE memory_semantic
           SET access_count = access_count + 1,
@@ -217,8 +226,8 @@ export async function fetchPersonaContext(agentId: string, embedding: number[] |
       }
 
       if (results.length > 0) {
-        personaContext = results
-          .map((r: any) => `* **[${r.category}]**: ${r.content}`)
+        personaContext = (results as PersonaRow[])
+          .map((r) => `* **[${r.category}]**: ${r.content}`)
           .join("\n");
       }
     });
@@ -233,15 +242,8 @@ export async function fetchPersonaContext(agentId: string, embedding: number[] |
 // DYNAMIC TOOLS
 // =============================================================================
 
-/** OpenAI-compatible tool definition (function calling format). */
-export interface ChatCompletionTool {
-  type: "function";
-  function: {
-    name: string;
-    description?: string;
-    parameters?: Record<string, unknown>;
-  };
-}
+// ChatCompletionTool type is now imported from schemas/validation.ts
+export type { ChatCompletionTool } from "../schemas/validation.js";
 
 /**
  * Fetch dynamic tools from context_environment based on embedding similarity.
@@ -262,7 +264,7 @@ export async function fetchDynamicTools(agentId: string, embedding: number[]): P
       `;
 
       if (results.length > 0) {
-        dynamicTools = results.map((r: any) => JSON.parse(r.context_data) as ChatCompletionTool);
+        dynamicTools = results.map((r: { context_data: string }) => JSON.parse(r.context_data) as ChatCompletionTool);
         console.log(`[TOOLS] 🔧 Loaded ${dynamicTools.length} dynamic tool(s): ${dynamicTools.map(t => t.function.name).join(", ")}`);
       }
     });
@@ -275,18 +277,7 @@ export async function fetchDynamicTools(agentId: string, embedding: number[]): P
 
 // =============================================================================
 // MEMORY STORE (replaces db-memory-store skill)
-export interface MemoryOptions {
-  category?: string;
-  source_uri?: string;
-  volatility?: "low" | "medium" | "high";
-  is_pointer?: boolean;
-  token_count?: number;
-  confidence?: number;
-  tier?: "volatile" | "session" | "daily" | "stable" | "permanent";
-  usefulness_score?: number;
-  expires_at?: Date | null;
-  metadata?: Record<string, any>;
-}
+// MemoryOptions type is now imported from schemas/validation.ts
 
 /**
  * Store a new semantic memory fact. Deduplicates via content_hash.
@@ -329,9 +320,9 @@ export async function storeMemory(agentId: string,
       console.log(`[MEMORY] Duplicate — fact already exists.`);
       return { id: null, status: "duplicate" };
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (err instanceof z.ZodError) {
-      console.error("[MEMORY] Validation failed:", (err as any).errors);
+      console.error("[MEMORY] Validation failed:", err.issues);
       return { id: null, status: "error: validation failed" };
     }
     console.error("[MEMORY] Failed to store:", err);
@@ -389,9 +380,9 @@ export async function updateMemory(agentId: string,
 
     console.log(`[MEMORY] Updated. Old (${oldMemoryId.substring(0, 8)}) deprecated, new truth: ${result.substring(0, 8)}`);
     return { newId: result, status: "updated" };
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (err instanceof z.ZodError) {
-      console.error("[MEMORY] Validation failed:", (err as any).errors);
+      console.error("[MEMORY] Validation failed:", err.issues);
       return { newId: null, status: "error: validation failed" };
     }
     console.error("[MEMORY] Failed to update:", err);

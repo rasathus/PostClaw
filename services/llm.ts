@@ -7,6 +7,7 @@
  */
 
 import { execFile } from "child_process";
+import { OpenClawAgentResponseSchema } from "../schemas/validation.js";
 
 // ─── LLM via OpenClaw Agent CLI ─────────────────────────────────────────────
 
@@ -51,19 +52,26 @@ export async function callLLMviaAgent(
   // Structure: { status, result: { payloads: [{ text }] } }
   let text = "";
   try {
-    const parsed = JSON.parse(result);
+    const raw: unknown = JSON.parse(result);
+    const parsed = OpenClawAgentResponseSchema.safeParse(raw);
 
-    if (parsed.status !== "ok") {
-      throw new Error(`openclaw agent returned status "${parsed.status}": ${parsed.summary || ""}`);
+    if (!parsed.success) {
+      // Not valid JSON structure — fall through to raw text handling
+      throw new Error("Invalid JSON structure");
     }
 
-    text = parsed?.result?.payloads?.[0]?.text ?? "";
+    if (parsed.data.status !== "ok") {
+      throw new Error(`openclaw agent returned status "${parsed.data.status}": ${parsed.data.summary || ""}`);
+    }
+
+    text = parsed.data.result?.payloads?.[0]?.text ?? "";
     if (!text) {
       throw new Error("openclaw agent returned no text in result.payloads[0].text");
     }
-  } catch (e: any) {
-    if (e.message?.startsWith("openclaw agent")) throw e;
-    // Not JSON — use raw output, stripping ANSI codes and CLI chrome
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.startsWith("openclaw agent")) throw e;
+    // Not valid JSON — use raw output, stripping ANSI codes and CLI chrome
     text = result
       .replace(/\x1b\[[0-9;]*m/g, "")   // strip ANSI color codes
       .replace(/^.*?◇\s*/s, "")          // strip everything before ◇
