@@ -62,7 +62,7 @@ export function startDashboard(opts: DashboardOptions = {}): void {
   // Static files are NOT compiled by tsc — they live in dashboard/public/
   const projectRoot = join(dirname(__filename), "..", "..");
   const publicDir = join(projectRoot, "dashboard", "public");
-  const ambientDir = join(projectRoot, "node_modules", "@ambientcss", "css");
+  const ambientDir = join(projectRoot, "node_modules", "@ambientcss", "css", "dist");
 
   _server = createServer(async (req, res) => {
     const url = req.url || "/";
