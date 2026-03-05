@@ -135,6 +135,7 @@ export async function saveConfig(agentId: string, config: PostClawConfig): Promi
     
     // Upsert each main section as a JSONB value
     await sql.begin(async (tx: any) => {
+      await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
       for (const [key, value] of Object.entries(config)) {
         await tx`
           INSERT INTO plugin_config (agent_id, config_key, config_value)
