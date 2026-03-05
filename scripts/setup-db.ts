@@ -245,7 +245,6 @@ ALTER TABLE memory_episodic ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agent_persona ENABLE ROW LEVEL SECURITY;
 ALTER TABLE plugin_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE entity_edges ENABLE ROW LEVEL SECURITY;
-ALTER TABLE conversation_checkpoints ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies (idempotent: DROP IF EXISTS + CREATE)
 -- memory_semantic
@@ -320,23 +319,6 @@ DROP POLICY IF EXISTS episodic_delete ON memory_episodic;
 CREATE POLICY episodic_delete ON memory_episodic FOR DELETE
     USING (agent_id = current_setting('app.current_agent_id', true));
 
--- conversation_checkpoints
-DROP POLICY IF EXISTS checkpoint_read ON conversation_checkpoints;
-CREATE POLICY checkpoint_read ON conversation_checkpoints FOR SELECT
-    USING (agent_id = current_setting('app.current_agent_id', true));
-
-DROP POLICY IF EXISTS checkpoint_insert ON conversation_checkpoints;
-CREATE POLICY checkpoint_insert ON conversation_checkpoints FOR INSERT
-    WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
-
-DROP POLICY IF EXISTS checkpoint_update ON conversation_checkpoints;
-CREATE POLICY checkpoint_update ON conversation_checkpoints FOR UPDATE
-    USING (agent_id = current_setting('app.current_agent_id', true))
-    WITH CHECK (agent_id = current_setting('app.current_agent_id', true));
-
-DROP POLICY IF EXISTS checkpoint_delete ON conversation_checkpoints;
-CREATE POLICY checkpoint_delete ON conversation_checkpoints FOR DELETE
-    USING (agent_id = current_setting('app.current_agent_id', true));
 
 -- entity_edges
 DROP POLICY IF EXISTS edge_read ON entity_edges;
