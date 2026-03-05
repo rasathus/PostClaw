@@ -80,6 +80,7 @@ export interface SleepCycleStats {
   factsExtracted: number;
   duplicatesMerged: number;
   staleArchived: number;
+  expiredArchived: number;
   linksCreated: number;
 }
 
@@ -217,7 +218,7 @@ async function phaseDuplicateDetection(agentId: string, options: { threshold: nu
       if (archivedIds.has(source.id)) continue;
 
       const duplicates = await tx`
-        SELECT id, content, usefulness_score, access_count
+        SELECT id, content, usefulness_score, access_count, confidence, volatility, injection_count
         FROM memory_semantic
         WHERE agent_id = ${agentId}
           AND is_archived = false
@@ -230,11 +231,17 @@ async function phaseDuplicateDetection(agentId: string, options: { threshold: nu
       if (duplicates.length === 0) continue;
 
       const allCandidates = [source, ...duplicates];
+      // Score survivors using ALL relevant DB columns:
+      // usefulness_score, access_count, confidence, injection_count, volatility
       allCandidates.sort((a, b) => {
         const rowA = a as DuplicateCandidateRow;
         const rowB = b as DuplicateCandidateRow;
-        const scoreA = (rowA.usefulness_score || 0) + (rowA.access_count || 0) * 0.1;
-        const scoreB = (rowB.usefulness_score || 0) + (rowB.access_count || 0) * 0.1;
+        const volPenA = rowA.volatility === 'high' ? -0.5 : rowA.volatility === 'medium' ? -0.2 : 0;
+        const volPenB = rowB.volatility === 'high' ? -0.5 : rowB.volatility === 'medium' ? -0.2 : 0;
+        const scoreA = (rowA.usefulness_score || 0) + (rowA.access_count || 0) * 0.1
+                     + (rowA.confidence || 0.5) * 0.5 + (rowA.injection_count || 0) * 0.05 + volPenA;
+        const scoreB = (rowB.usefulness_score || 0) + (rowB.access_count || 0) * 0.1
+                     + (rowB.confidence || 0.5) * 0.5 + (rowB.injection_count || 0) * 0.05 + volPenB;
         return scoreB - scoreA;
       });
 
@@ -274,15 +281,35 @@ async function phaseLowValueCleanup(agentId: string, options: { ageDays: number;
   const result = await sql.begin(async (tx: any) => {
     await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
+    // Also archive memories past their expires_at date
+    const expiredRows = await tx`
+      UPDATE memory_semantic
+      SET is_archived = true
+      WHERE agent_id = ${agentId}
+        AND is_archived = false
+        AND expires_at IS NOT NULL
+        AND expires_at < NOW()
+      RETURNING id, content, tier;
+    `;
+    if (expiredRows.length > 0) {
+      for (const m of expiredRows) {
+        console.log(`[PHASE 3] -> Archived expired: "${m.content.substring(0, 60)}..." (tier=${m.tier})`);
+      }
+      console.log(`[PHASE 3] Archived ${expiredRows.length} expired memories.`);
+    }
+
+    // Low-value cleanup: consider access_count, injection_count, and confidence
     const staleMemories = await tx`
-      SELECT id, content, tier, access_count, created_at
+      SELECT id, content, tier, access_count, injection_count, confidence, created_at
       FROM memory_semantic
       WHERE agent_id = ${agentId}
         AND is_archived = false
         AND access_count = 0
+        AND injection_count = 0
+        AND confidence < 0.3
         AND created_at < NOW() - INTERVAL '1 day' * ${options.ageDays}
         AND tier NOT IN ${sql(options.protectedTiers)}
-      ORDER BY created_at ASC;
+      ORDER BY confidence ASC, created_at ASC;
     `;
 
     if (staleMemories.length === 0) {
@@ -300,10 +327,10 @@ async function phaseLowValueCleanup(agentId: string, options: { ageDays: number;
       console.log(`[PHASE 3] -> Archived stale: "${m.content.substring(0, 60)}..." (tier=${m.tier}, age=${Math.round((Date.now() - new Date(m.created_at).getTime()) / 86400000)}d)`);
     }
 
-    return staleMemories.length;
+    return staleMemories.length + expiredRows.length;
   });
 
-  console.log(`[PHASE 3] Archived ${result} low-value memories.`);
+  console.log(`[PHASE 3] Archived ${result} total entries (low-value + expired).`);
   return result;
 }
 
@@ -318,29 +345,38 @@ async function phaseLinkDiscovery(agentId: string, options: { min: number; max: 
 
   const sql = getSql();
 
-  const sourceMemories = await sql.begin(async (tx: any) => {
+  // Fetch both memories and persona traits
+  const [sourceMemories, personaTraits] = await sql.begin(async (tx: any) => {
     await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
-    return await tx`
+    const memories = await tx`
       SELECT id, content, embedding
       FROM memory_semantic
       WHERE agent_id = ${agentId} AND is_archived = false
       ORDER BY created_at DESC
       LIMIT ${options.scanLimit};
     `;
+    const personas = await tx`
+      SELECT id, category, content, embedding
+      FROM agent_persona
+      WHERE agent_id = ${agentId}
+    `;
+    return [memories, personas];
   });
 
-  if (sourceMemories.length < 2) {
-    console.log(`[PHASE 4] Not enough memories for link discovery (${sourceMemories.length}).`);
+  if (sourceMemories.length < 2 && personaTraits.length === 0) {
+    console.log(`[PHASE 4] Not enough entries for link discovery (${sourceMemories.length} memories, ${personaTraits.length} persona traits).`);
     return 0;
   }
 
-  console.log(`[PHASE 4] Scanning ${sourceMemories.length} memories for link candidates...`);
+  console.log(`[PHASE 4] Scanning ${sourceMemories.length} memories + ${personaTraits.length} persona traits for link candidates...`);
 
   interface CandidatePair {
     source_id: string;
     source_content: string;
+    source_type: "memory" | "persona";
     target_id: string;
     target_content: string;
+    target_type: "memory" | "persona";
     similarity: number;
   }
 
@@ -350,6 +386,7 @@ async function phaseLinkDiscovery(agentId: string, options: { min: number; max: 
   await sql.begin(async (tx: any) => {
     await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
+    // 1) Memory ↔ Memory candidates (original behavior)
     for (const source of sourceMemories) {
       const candidates = await tx`
         SELECT m.id, m.content, 1 - (m.embedding <=> ${source.embedding}) AS similarity
@@ -378,8 +415,49 @@ async function phaseLinkDiscovery(agentId: string, options: { min: number; max: 
         candidatePairs.push({
           source_id: source.id,
           source_content: source.content,
+          source_type: "memory",
           target_id: candidate.id,
           target_content: candidate.content,
+          target_type: "memory",
+          similarity: candidate.similarity,
+        });
+      }
+    }
+
+    // 2) Persona ↔ Memory cross-link candidates
+    for (const persona of personaTraits) {
+      if (!persona.embedding) continue; // skip personas without embeddings
+
+      const candidates = await tx`
+        SELECT m.id, m.content, 1 - (m.embedding <=> ${persona.embedding}) AS similarity
+        FROM memory_semantic m
+        WHERE m.agent_id = ${agentId}
+          AND m.is_archived = false
+          AND 1 - (m.embedding <=> ${persona.embedding}) BETWEEN ${options.min} AND ${options.max}
+          AND NOT EXISTS (
+            SELECT 1 FROM entity_edges e
+            WHERE e.agent_id = ${agentId}
+              AND (
+                (e.source_persona_id = ${persona.id} AND e.target_memory_id = m.id)
+                OR (e.source_memory_id = m.id AND e.target_persona_id = ${persona.id})
+              )
+          )
+        ORDER BY similarity DESC
+        LIMIT ${options.candidatesPerMemory};
+      `;
+
+      for (const candidate of candidates) {
+        const pairKey = [persona.id, candidate.id].sort().join(":");
+        if (seenPairs.has(pairKey)) continue;
+        seenPairs.add(pairKey);
+
+        candidatePairs.push({
+          source_id: persona.id,
+          source_content: `[Persona: ${persona.category}] ${persona.content}`,
+          source_type: "persona",
+          target_id: candidate.id,
+          target_content: candidate.content,
+          target_type: "memory",
           similarity: candidate.similarity,
         });
       }
@@ -391,7 +469,9 @@ async function phaseLinkDiscovery(agentId: string, options: { min: number; max: 
     return 0;
   }
 
-  console.log(`[PHASE 4] Found ${candidatePairs.length} candidate pairs. Classifying relationships...`);
+  const memMemCount = candidatePairs.filter(p => p.source_type === "memory" && p.target_type === "memory").length;
+  const crossCount = candidatePairs.length - memMemCount;
+  console.log(`[PHASE 4] Found ${candidatePairs.length} candidate pairs (${memMemCount} memory↔memory, ${crossCount} persona↔memory). Classifying relationships...`);
 
   let linksCreated = 0;
 
@@ -399,12 +479,12 @@ async function phaseLinkDiscovery(agentId: string, options: { min: number; max: 
     const batch = candidatePairs.slice(i, i + options.batchSize);
 
     const pairsDescription = batch
-      .map((p, idx) => `${idx + 1}. [A: ${p.source_id}] "${p.source_content}"\n   [B: ${p.target_id}] "${p.target_content}" (similarity: ${(p.similarity * 100).toFixed(1)}%)`)
+      .map((p, idx) => `${idx + 1}. [A: ${p.source_type}/${p.source_id}] "${p.source_content}"\n   [B: ${p.target_type}/${p.target_id}] "${p.target_content}" (similarity: ${(p.similarity * 100).toFixed(1)}%)`)
       .join("\n\n");
 
     const systemPrompt = `
 You are a knowledge graph relationship classifier.
-Given pairs of memory entries, classify the relationship between them.
+Given pairs of memory entries and/or persona traits, classify the relationship between them.
 
 Valid relationship types:
 - "related_to" — general topical relation
@@ -412,6 +492,8 @@ Valid relationship types:
 - "contradicts" — B conflicts with or corrects A
 - "depends_on" — B depends on knowledge from A
 - "part_of" — B is a component/subset of A
+- "defines" — A (usually a persona trait) defines the context for B (a memory)
+- "supports" — B provides evidence or backing for A
 - "none" — no meaningful relationship worth linking
 
 Output EXCLUSIVELY a JSON array of objects:
@@ -421,7 +503,7 @@ Use "none" for pairs that don't have a meaningful relationship worth persisting.
 Do not use markdown formatting.
 `;
 
-    const jsonString = await callLLMviaAgent(`${systemPrompt}\n\nClassify the relationships between these memory pairs:\n\n${pairsDescription}`);
+    const jsonString = await callLLMviaAgent(`${systemPrompt}\n\nClassify the relationships between these pairs:\n\n${pairsDescription}`);
 
     let classifications: LinkClassification[];
     try {
@@ -437,14 +519,30 @@ Do not use markdown formatting.
       for (const cls of classifications) {
         if (cls.relationship === "none" || !cls.relationship) continue;
 
+        // Determine which FK columns to populate based on the original pair's types
+        const originalPair = batch.find(p => p.source_id === cls.source_id && p.target_id === cls.target_id);
+        if (!originalPair) continue;
+
         try {
           await tx`
-            INSERT INTO entity_edges (agent_id, source_memory_id, target_memory_id, relationship_type, weight)
-            VALUES (${agentId}, ${cls.source_id}, ${cls.target_id}, ${cls.relationship}, 1.0)
-            ON CONFLICT (source_memory_id, target_memory_id, relationship_type) DO NOTHING;
+            INSERT INTO entity_edges (
+              agent_id,
+              source_memory_id, target_memory_id,
+              source_persona_id, target_persona_id,
+              relationship_type, weight
+            ) VALUES (
+              ${agentId},
+              ${originalPair.source_type === "memory" ? cls.source_id : null},
+              ${originalPair.target_type === "memory" ? cls.target_id : null},
+              ${originalPair.source_type === "persona" ? cls.source_id : null},
+              ${originalPair.target_type === "persona" ? cls.target_id : null},
+              ${cls.relationship}, ${originalPair.similarity}
+            )
+            ON CONFLICT DO NOTHING;
           `;
           linksCreated++;
-          console.log(`[PHASE 4] -> Linked: ${cls.source_id.substring(0, 8)} → ${cls.target_id.substring(0, 8)} as "${cls.relationship}"`);
+          const linkLabel = `${originalPair.source_type}/${cls.source_id.substring(0, 8)} → ${originalPair.target_type}/${cls.target_id.substring(0, 8)}`;
+          console.log(`[PHASE 4] -> Linked: ${linkLabel} as "${cls.relationship}"`);
         } catch (err) {
           console.error(`[PHASE 4] Failed to insert edge: ${err}`);
         }
@@ -474,6 +572,7 @@ export async function runSleepCycle(opts: SleepCycleOptions = {}): Promise<Sleep
     factsExtracted: 0,
     duplicatesMerged: 0,
     staleArchived: 0,
+    expiredArchived: 0,
     linksCreated: 0,
   };
 
@@ -499,7 +598,7 @@ export async function runSleepCycle(opts: SleepCycleOptions = {}): Promise<Sleep
     console.log(`  Sleep Cycle Complete 💤`);
     console.log(`  Facts extracted:   ${stats.factsExtracted}`);
     console.log(`  Duplicates merged: ${stats.duplicatesMerged}`);
-    console.log(`  Stale archived:    ${stats.staleArchived}`);
+    console.log(`  Stale/expired:     ${stats.staleArchived} (incl. expired)`);
     console.log(`  Links created:     ${stats.linksCreated}`);
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
   } catch (err) {

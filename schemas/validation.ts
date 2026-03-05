@@ -90,6 +90,9 @@ export const DuplicateCandidateRowSchema = z.object({
     content: z.string(),
     usefulness_score: z.number().nullable().optional(),
     access_count: z.number().nullable().optional(),
+    confidence: z.number().nullable().optional(),
+    volatility: z.string().nullable().optional(),
+    injection_count: z.number().nullable().optional(),
 });
 
 export type DuplicateCandidateRow = z.infer<typeof DuplicateCandidateRowSchema>;

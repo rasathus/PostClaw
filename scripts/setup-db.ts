@@ -164,15 +164,8 @@ CREATE TABLE IF NOT EXISTS memory_episodic (
     is_archived BOOLEAN DEFAULT false
 );
 
-CREATE TABLE IF NOT EXISTS conversation_checkpoints (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id VARCHAR(100) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    session_id VARCHAR(100) NOT NULL,
-    summary TEXT NOT NULL,
-    active_tasks JSONB,
-    token_count INT,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
+-- Drop unused conversation_checkpoints table (not used in current setup)
+DROP TABLE IF EXISTS conversation_checkpoints;
 
 CREATE TABLE IF NOT EXISTS entity_edges (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

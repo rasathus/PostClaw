@@ -375,6 +375,16 @@ input[type="text"]:focus, input[type="number"]:focus, textarea:focus, select:foc
   font-size: 0.85rem;
 }
 
+/* ---------- Compact memory table ---------- */
+.data-table th, .data-table td { font-size: 0.82rem; padding: 0.35rem 0.5rem; white-space: nowrap; }
+.data-table td:first-child { white-space: normal; max-width: 280px; }
+.data-table-container { overflow-x: auto; }
+.memory-pointer { border-left: 3px solid var(--accent-primary); }
+
+.vol-low { color: var(--accent-green, #4ade80); }
+.vol-medium { color: var(--accent-amber, #f7b955); }
+.vol-high { color: var(--accent-red, #f7555a); }
+
 /* ---------- Knowledge Graph ---------- */
 .graph-wrapper {
   position: relative;

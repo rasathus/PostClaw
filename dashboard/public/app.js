@@ -199,10 +199,11 @@ async function loadMemories() {
   const res = await api(`/api/memories?${params}`);
   if (!res.ok) return;
 
-  memoryPage.total = res.data.length;
+  const memories = res.data.memories || res.data;
+  memoryPage.total = res.data.total ?? memories.length;
   const container = document.getElementById("memory-list");
 
-  if (res.data.length === 0) {
+  if (memories.length === 0) {
     container.innerHTML = '<p class="hint">No memories found.</p>';
     document.getElementById("memory-pagination").innerHTML = "";
     return;
@@ -210,23 +211,39 @@ async function loadMemories() {
 
   container.innerHTML = `
     <table class="data-table">
-      <thead><tr><th>Content</th><th>Category</th><th>Tier</th><th>Score</th><th>Actions</th></tr></thead>
+      <thead><tr>
+        <th>Content</th><th>Category</th><th>Tier</th><th>Vol.</th><th>Conf.</th>
+        <th>Score</th><th>Acc.</th><th>Inj.</th><th>Created</th><th>Actions</th>
+      </tr></thead>
       <tbody>
-        ${res.data
+        ${memories
           .map(
-            (m) => `
-          <tr>
-            <td title="${(m.content || "").replace(/"/g, "&quot;")}">${truncate(m.content, 60)}</td>
-            <td>${m.category || "—"}</td>
-            <td>${badge(m.tier || "daily")}</td>
-            <td>${m.usefulness_score != null ? m.usefulness_score.toFixed(1) : "—"}</td>
+            (m) => {
+              const created = m.created_at ? new Date(m.created_at).toLocaleDateString() : '—';
+              const conf = m.confidence != null ? m.confidence.toFixed(2) : '—';
+              const vol = m.volatility || '—';
+              const score = m.usefulness_score != null ? m.usefulness_score.toFixed(1) : '—';
+              const acc = m.access_count ?? 0;
+              const inj = m.injection_count ?? 0;
+              return `
+          <tr${m.is_pointer ? ' class="memory-pointer"' : ''}>
+            <td title="${(m.content || '').replace(/"/g, '&quot;')}">${truncate(m.content, 50)}</td>
+            <td>${m.category || '—'}</td>
+            <td>${badge(m.tier || 'daily')}</td>
+            <td><span class="vol-${vol}">${vol}</span></td>
+            <td>${conf}</td>
+            <td>${score}</td>
+            <td>${acc}</td>
+            <td>${inj}</td>
+            <td>${created}</td>
             <td class="actions">
               <button class="btn-sm btn-secondary" onclick="editMemory('${m.id}')">✏️</button>
               <button class="btn-sm btn-danger" onclick="deleteMemory('${m.id}')">🗑️</button>
             </td>
-          </tr>`,
+          </tr>`;
+            },
           )
-          .join("")}
+          .join('')}
       </tbody>
     </table>
   `;
@@ -237,10 +254,11 @@ async function loadMemories() {
 function renderPagination() {
   const el = document.getElementById("memory-pagination");
   const page = Math.floor(memoryPage.offset / memoryPage.limit) + 1;
+  const totalPages = Math.max(1, Math.ceil(memoryPage.total / memoryPage.limit));
   el.innerHTML = `
     <button class="btn-sm btn-secondary" onclick="prevMemoryPage()" ${memoryPage.offset === 0 ? "disabled" : ""}>← Prev</button>
-    <span>Page ${page}</span>
-    <button class="btn-sm btn-secondary" onclick="nextMemoryPage()" ${memoryPage.total < memoryPage.limit ? "disabled" : ""}>Next →</button>
+    <span>Page ${page} of ${totalPages} (${memoryPage.total} total)</span>
+    <button class="btn-sm btn-secondary" onclick="nextMemoryPage()" ${page >= totalPages ? "disabled" : ""}>Next →</button>
   `;
 }
 
@@ -663,7 +681,13 @@ async function loadGraph() {
     .data(res.data.nodes)
     .join("g")
     .attr("class", "graph-node")
-    .call(d3.drag().on("start", dragStart).on("drag", dragging).on("end", dragEnd));
+    .call(
+      d3.drag()
+        .filter((event) => !event.shiftKey)  // let shift+drag fall through to link handler
+        .on("start", dragStart)
+        .on("drag", dragging)
+        .on("end", dragEnd)
+    );
 
   // Glow
   node
@@ -708,23 +732,26 @@ async function loadGraph() {
   // Click handler
   node.on("click", (_event, d) => showNodeDetail(d));
 
-  // Shift+drag to link
-  node.on("mousedown", function (event, d) {
+  // Shift+drag to link — use native mousedown since D3 drag ignores shift events
+  node.on("mousedown.link", function (event, d) {
     if (!event.shiftKey) return;
     event.stopPropagation();
+    event.preventDefault();
     const svgEl = document.getElementById("graph-svg");
     const pt = svgEl.createSVGPoint();
     pt.x = event.clientX;
     pt.y = event.clientY;
-    const svgPt = pt.matrixTransform(g.node().getScreenCTM().inverse());
+    const ctm = g.node().getScreenCTM();
+    if (!ctm) return;
+    const svgPt = pt.matrixTransform(ctm.inverse());
 
     const line = g
       .append("line")
       .attr("class", "graph-link-preview")
-      .attr("x1", svgPt.x)
-      .attr("y1", svgPt.y)
-      .attr("x2", svgPt.x)
-      .attr("y2", svgPt.y);
+      .attr("x1", d.x)
+      .attr("y1", d.y)
+      .attr("x2", d.x)
+      .attr("y2", d.y);
 
     shiftLinkState = { sourceNode: d, line };
   });
