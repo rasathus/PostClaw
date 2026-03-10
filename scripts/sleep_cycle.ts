@@ -619,14 +619,27 @@ export function startService(opts: SleepCycleOptions & { intervalHours?: number 
   const intervalMs = (opts.intervalHours || DEFAULT_INTERVAL_HOURS) * 60 * 60 * 1000;
   const label = `${opts.intervalHours || DEFAULT_INTERVAL_HOURS}h`;
 
-  console.log(`[SLEEP SERVICE] Started — first cycle in ${label}, then every ${label} for agent="${opts.agentId || "main"}"`);
+  console.log(`[SLEEP SERVICE] Started — first cycle in ${label}, then every ${label} for all active agents`);
 
   // Do NOT run immediately — this blocks plugin install/validation.
   // First cycle fires after the interval elapses.
   _serviceTimer = setInterval(async () => {
-    console.log(`[SLEEP SERVICE] Interval tick — starting cycle`);
-    const agentConfig = await loadConfig(opts.agentId || "main");
-    runSleepCycle({ ...opts, config: agentConfig.sleep }).catch((err) => console.error("[SLEEP SERVICE] Cycle failed:", err));
+    console.log(`[SLEEP SERVICE] Interval tick — fetching active agents`);
+    try {
+      const sql = getSql();
+      const agents = await sql`SELECT id FROM agents`;
+
+      for (const agent of agents) {
+        console.log(`[SLEEP SERVICE] Starting cycle for agent="${agent.id}"`);
+        // Override opts.agentId for each cycle run so it doesn't default to 'main'
+        const agentConfig = await loadConfig(agent.id);
+        await runSleepCycle({ ...opts, agentId: agent.id, config: agentConfig.sleep }).catch((err) =>
+          console.error(`[SLEEP SERVICE] Cycle failed for agent="${agent.id}":`, err)
+        );
+      }
+    } catch (err) {
+      console.error("[SLEEP SERVICE] Failed to fetch agents or run cycle:", err);
+    }
   }, intervalMs);
 }
 
@@ -655,9 +668,23 @@ if (require.main === module) {
 
   async function runStandalone() {
     try {
-      const agentId = specificAgentId || "main";
-      const agentConfig = await loadConfig(agentId);
-      await runSleepCycle({ agentId, config: agentConfig.sleep });
+      if (specificAgentId) {
+        console.log(`[SLEEP SERVICE] Running manual cycle for specific agent="${specificAgentId}"`);
+        const agentConfig = await loadConfig(specificAgentId);
+        await runSleepCycle({ agentId: specificAgentId, config: agentConfig.sleep });
+      } else {
+        console.log(`[SLEEP SERVICE] Running manual cycle for all active agents`);
+        const sql = getSql();
+        const agents = await sql`SELECT id FROM agents`;
+
+        for (const agent of agents) {
+          console.log(`[SLEEP SERVICE] Starting cycle for agent="${agent.id}"`);
+          const agentConfig = await loadConfig(agent.id);
+          await runSleepCycle({ agentId: agent.id, config: agentConfig.sleep }).catch((err) =>
+            console.error(`[SLEEP SERVICE] Cycle failed for agent="${agent.id}":`, err)
+          );
+        }
+      }
     } finally {
       getSql().end();
     }
