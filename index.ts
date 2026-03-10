@@ -82,6 +82,10 @@ const openclawPostgresPlugin = {
 
     // Apply database URL from plugin config (plugins.entries.postclaw.config.dbUrl)
     const pluginConfig = api.config?.plugins?.entries?.postclaw?.config;
+    const debugLogging = pluginConfig?.debugLogging === true;
+    const debugLog = (...args: any[]) => {
+      if (debugLogging) console.log("[PostClaw DEBUG]", ...args);
+    };
 
     if (pluginConfig?.dbUrl) {
       setDbUrl(pluginConfig.dbUrl);
@@ -123,6 +127,9 @@ const openclawPostgresPlugin = {
       "before_prompt_build",
       async (event: PromptBuildEvent, ctx: PromptBuildCtx) => {
         try {
+          debugLog("before_prompt_build event:", JSON.stringify(event, null, 2));
+          debugLog("before_prompt_build ctx:", JSON.stringify(ctx, null, 2));
+
           const messages: ChatMessage[] = event.messages ?? [];
           const userText = lastReceivedMessage || extractUserText(messages);
           lastReceivedMessage = "";  // consume once — prevent stale leak into heartbeats
@@ -251,8 +258,9 @@ Results also include graph-linked memories discovered via multi-hop traversal of
         parameters: Type.Object({
           query: Type.String({ description: "Natural language search query. Be specific — this drives vector cosine similarity matching against stored memory embeddings." }),
         }),
-        async execute(_toolCallId: string, args: { query: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, args: { query: string }, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("memory_search mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           const config = getCurrentConfig();
           const result = await searchPostgres(agentId, args.query, {
@@ -306,8 +314,11 @@ Auto-managed columns (do not set): access_count, injection_count, is_pointer, co
           superseded_by: Type.Optional(Type.String({ description: "UUID pointer to a memory replacing this one." })),
           metadata: Type.Optional(Type.Any({ description: "JSON object of additional context (e.g. {source: 'user_stated', topic: 'birthday', related_to: 'family'}). Stored as JSONB for flexible querying." }))
         }),
-        async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          debugLog("memory_store args:", JSON.stringify(args, null, 2));
+          debugLog("memory_store ctx (from execute params):", JSON.stringify(ctx, null, 2));
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("memory_store mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           const { content, scope, ...options } = args;
           const result = await storeMemory(agentId, content, scope, options as any);
@@ -360,8 +371,10 @@ Use this instead of memory_store when you know the UUID of the outdated fact.`,
           superseded_by: Type.Optional(Type.String({ description: "UUID pointer to a memory replacing this one." })),
           metadata: Type.Optional(Type.Any({ description: "JSON metadata for the new memory. Does NOT carry over from old memory." }))
         }),
-        async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          debugLog("memory_update args:", JSON.stringify(args, null, 2));
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("memory_update mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           const { old_memory_id, new_fact, scope, ...options } = args;
           const result = await updateMemory(agentId, old_memory_id, new_fact, scope, options as any);
@@ -385,8 +398,10 @@ The edge weight defaults to 1.0. Edges are also auto-discovered during the sleep
           target_id: Type.String({ description: "UUID of the target node (memory or persona trait)" }),
           relationship: Type.String({ description: "Relationship type: 'related_to', 'elaborates', 'contradicts', 'depends_on', 'part_of', 'defines', or 'supports'" }),
         }),
-        async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          debugLog("memory_link args:", JSON.stringify(args, null, 2));
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("memory_link mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           const result = await linkMemories(agentId, args.source_id, args.target_id, args.relationship);
           return JSON.stringify(result);
@@ -405,8 +420,9 @@ Each entry includes: id (UUID), category (unique per agent, e.g. 'core_identity'
 
 Persona traits tagged is_always_active=true are always in the system prompt. Others are selected by cosine similarity to the current user message.`,
         parameters: Type.Object({}),
-        async execute(_toolCallId: string, _args: Record<string, never>, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, _args: Record<string, never>, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("persona_list mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           const personas = await listPersonas(agentId);
           return JSON.stringify(personas);
@@ -423,8 +439,9 @@ Persona traits tagged is_always_active=true are always in the system prompt. Oth
         parameters: Type.Object({
           persona_id: Type.String({ description: "UUID of the persona entry" }),
         }),
-        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("persona_get mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           const persona = await getPersona(agentId, args.persona_id);
           return persona ? JSON.stringify(persona) : "Persona not found.";
@@ -447,8 +464,9 @@ Each entry requires a category (must be unique per agent, e.g. 'core_identity', 
           is_always_active: Type.Optional(Type.Boolean({ description: "If true, this persona trait is always injected into the system prompt. If false, it is only injected when contextually relevant. Defaults to false." })),
           scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { default: "private", description: "Who can access this persona. 'private' (this agent only) or 'global' (all agents share this trait)." })),
         }),
-        async execute(_toolCallId: string, args: { category: string; content: string; is_always_active?: boolean; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, args: { category: string; content: string; is_always_active?: boolean; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("persona_create mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           try {
             const newPersona = await createPersona(agentId, {
@@ -481,8 +499,9 @@ Changing content will re-embed the persona for situational matching. Categories 
           is_always_active: Type.Optional(Type.Boolean({ description: "If true, this persona trait is always injected into the system prompt. If false, it is only injected when contextually relevant." })),
           scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { description: "Update access scope. 'private', 'shared', or 'global'." })),
         }),
-        async execute(_toolCallId: string, args: { persona_id: string; category?: string; content?: string; is_always_active?: boolean; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, args: { persona_id: string; category?: string; content?: string; is_always_active?: boolean; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("persona_update mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           const { persona_id, scope, ...updates } = args;
           const payload = scope ? { ...updates, access_scope: scope } : updates;
@@ -501,8 +520,9 @@ Changing content will re-embed the persona for situational matching. Categories 
         parameters: Type.Object({
           persona_id: Type.String({ description: "UUID of the persona entry to delete. Cascades to remove associated graph edges." }),
         }),
-        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
-          const agentId = ctx?.agentId || "main";
+        async execute(_toolCallId: string, args: { persona_id: string }, _signal: unknown, _onUpdate: unknown, ctx?: any) {
+          const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
+          debugLog("persona_delete mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
           const deleted = await deletePersona(agentId, args.persona_id);
           return deleted ? '{"status": "deleted"}' : "Persona not found.";
@@ -518,10 +538,24 @@ Changing content will re-embed the persona for situational matching. Categories 
     //   event = { messages: ChatMessage[], success: boolean, error?: string, durationMs: number }
     //   ctx   = { agentId, sessionKey, sessionId, workspaceDir, messageProvider }
     // -------------------------------------------------------------------------
+    const toolCallIdToAgentId = new Map<string, string>();
+
+    api.on("before_tool_call", async (event: any, ctx: any) => {
+      debugLog("before_tool_call event:", JSON.stringify(event, null, 2));
+      debugLog("before_tool_call ctx:", JSON.stringify(ctx, null, 2));
+      const agentId = ctx?.agentId;
+      if (agentId && event.toolCallId) {
+        toolCallIdToAgentId.set(event.toolCallId, agentId);
+      }
+    });
+
     api.on(
       "agent_end",
       async (event: AgentEndEvent, ctx: AgentEndCtx) => {
         try {
+          debugLog("agent_end event:", JSON.stringify(event, null, 2));
+          debugLog("agent_end ctx:", JSON.stringify(ctx, null, 2));
+
           const messages: ChatMessage[] = event.messages ?? [];
           const agentId = ctx.agentId;
           const provider = ctx?.messageProvider ?? "";
@@ -547,6 +581,11 @@ Changing content will re-embed the persona for situational matching. Categories 
                 ? lastUser.content.filter((p: ContentPart) => p.type === "text").map((p: ContentPart) => p.text).join(" ")
                 : ""
             : "";
+
+          if (userMessage.includes("[POSTCLAW_INTERNAL_LLM_CALL_DO_NOT_LOG]")) {
+            console.log("[PostClaw] Skipped episodic logging for internal script call");
+            return;
+          }
 
           const promises: Promise<void>[] = [];
 

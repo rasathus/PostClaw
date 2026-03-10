@@ -27,6 +27,7 @@ import { PersonaChunkSchema, type PersonaChunk } from "../schemas/validation.js"
 async function chunkMarkdownWithLLM(
   markdownText: string,
   filename: string,
+  agentId: string,
 ): Promise<PersonaChunk[]> {
   const systemPrompt = `
 You are an expert data architect. Your task is to take a raw Markdown configuration file and break it down into discrete, atomic semantic chunks.
@@ -43,7 +44,7 @@ Each object must have:
 
   // Route through OpenClaw's configured primary model via the CLI
   const combined = `${systemPrompt}\n\nHere is the file to chunk:\n\n${markdownText}`;
-  const jsonString = await callLLMviaAgent(combined);
+  const jsonString = await callLLMviaAgent(combined, agentId);
 
   try {
     return z.array(PersonaChunkSchema).parse(JSON.parse(jsonString));
@@ -84,7 +85,7 @@ export async function bootstrapPersona(
   }
 
   // 2. Chunk with LLM (routed through OpenClaw's configured primary model)
-  const chunks = await chunkMarkdownWithLLM(markdownText, filename);
+  const chunks = await chunkMarkdownWithLLM(markdownText, filename, agentId);
   console.log(`  ✅  LLM produced ${chunks.length} semantic chunks`);
 
   // 3. Ensure agent exists

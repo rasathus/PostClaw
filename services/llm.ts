@@ -24,10 +24,12 @@ export async function callLLMviaAgent(
   prompt: string,
   agentId = "main",
 ): Promise<string> {
+  const taggedPrompt = `[POSTCLAW_INTERNAL_LLM_CALL_DO_NOT_LOG]\n\n${prompt}`;
   const args = [
     "agent",
     "--agent", agentId,
-    "--message", prompt,
+    "--session-id", `postclaw-internal-${agentId}`,
+    "--message", taggedPrompt,
     "--json",
   ];
 

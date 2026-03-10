@@ -128,7 +128,7 @@ Each object must have:
 - "is_always_active": Boolean. Set to true ONLY for core identity traits that must be injected into every prompt. Set to false if situational.`;
 
         const combined = `${systemPrompt}\n\nHere is the file to chunk:\n\n${markdownText}`;
-        const jsonString = await callLLMviaAgent(combined);
+        const jsonString = await callLLMviaAgent(combined, agentId);
 
         let chunks;
         try {
@@ -176,7 +176,7 @@ Output your response EXCLUSIVELY as a raw JSON array of strings. Do not use mark
 Each string should be a single fact or piece of knowledge.`;
 
         const combined = `${systemPrompt}\n\nHere is the file:\n\n${markdownText}`;
-        const jsonString = await callLLMviaAgent(combined);
+        const jsonString = await callLLMviaAgent(combined, agentId);
 
         let facts: string[];
         try {

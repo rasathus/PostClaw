@@ -42,6 +42,11 @@
                 "type": "integer",
                 "description": "Total number of memories (semantic + linked) to inject into prompt.",
                 "default": 15
+            },
+            "debugLogging": {
+                "type": "boolean",
+                "description": "Enable verbose logging of hook events and contexts for debugging",
+                "default": false
             }
         }
     },
