@@ -16,6 +16,7 @@
 
 import { getSql, getEmbedding, LM_STUDIO_URL } from "../services/db.js";
 import { ensureAgent } from "../services/memoryService.js";
+import { loadConfig } from "../services/config.js";
 import { callLLMviaAgent } from "../services/llm.js";
 import { z } from "zod";
 import {
@@ -141,7 +142,7 @@ Output your response EXCLUSIVELY as a JSON object matching this schema:
 Do not use markdown formatting.
 `;
 
-  const jsonString = await callLLMviaAgent(`${systemPrompt}\n\nHere is the recent episodic transcript to analyze:\n\n${transcript}`);
+  const jsonString = await callLLMviaAgent(`${systemPrompt}\n\nHere is the recent episodic transcript to analyze:\n\n${transcript}`, agentId);
   const result: SleepCycleResult = SleepCycleResultSchema.parse(JSON.parse(jsonString));
 
   console.log(`[PHASE 1] Extracted ${result.extracted_durable_facts.length} permanent facts.`);
@@ -239,9 +240,9 @@ async function phaseDuplicateDetection(agentId: string, options: { threshold: nu
         const volPenA = rowA.volatility === 'high' ? -0.5 : rowA.volatility === 'medium' ? -0.2 : 0;
         const volPenB = rowB.volatility === 'high' ? -0.5 : rowB.volatility === 'medium' ? -0.2 : 0;
         const scoreA = (rowA.usefulness_score || 0) + (rowA.access_count || 0) * 0.1
-                     + (rowA.confidence || 0.5) * 0.5 + (rowA.injection_count || 0) * 0.05 + volPenA;
+          + (rowA.confidence || 0.5) * 0.5 + (rowA.injection_count || 0) * 0.05 + volPenA;
         const scoreB = (rowB.usefulness_score || 0) + (rowB.access_count || 0) * 0.1
-                     + (rowB.confidence || 0.5) * 0.5 + (rowB.injection_count || 0) * 0.05 + volPenB;
+          + (rowB.confidence || 0.5) * 0.5 + (rowB.injection_count || 0) * 0.05 + volPenB;
         return scoreB - scoreA;
       });
 
@@ -503,7 +504,7 @@ Use "none" for pairs that don't have a meaningful relationship worth persisting.
 Do not use markdown formatting.
 `;
 
-    const jsonString = await callLLMviaAgent(`${systemPrompt}\n\nClassify the relationships between these pairs:\n\n${pairsDescription}`);
+    const jsonString = await callLLMviaAgent(`${systemPrompt}\n\nClassify the relationships between these pairs:\n\n${pairsDescription}`, agentId);
 
     let classifications: LinkClassification[];
     try {
@@ -622,9 +623,10 @@ export function startService(opts: SleepCycleOptions & { intervalHours?: number 
 
   // Do NOT run immediately — this blocks plugin install/validation.
   // First cycle fires after the interval elapses.
-  _serviceTimer = setInterval(() => {
+  _serviceTimer = setInterval(async () => {
     console.log(`[SLEEP SERVICE] Interval tick — starting cycle`);
-    runSleepCycle(opts).catch((err) => console.error("[SLEEP SERVICE] Cycle failed:", err));
+    const agentConfig = await loadConfig(opts.agentId || "main");
+    runSleepCycle({ ...opts, config: agentConfig.sleep }).catch((err) => console.error("[SLEEP SERVICE] Cycle failed:", err));
   }, intervalMs);
 }
 
@@ -649,15 +651,22 @@ if (require.main === module) {
     return args[idx + 1];
   }
 
-  runSleepCycle({
-    agentId: getArg("--agent-id") || args.find((a) => !a.startsWith("--")),
-  })
-    .then(() => {
+  const specificAgentId = getArg("--agent-id") || args.find((a) => !a.startsWith("--"));
+
+  async function runStandalone() {
+    try {
+      const agentId = specificAgentId || "main";
+      const agentConfig = await loadConfig(agentId);
+      await runSleepCycle({ agentId, config: agentConfig.sleep });
+    } finally {
       getSql().end();
-      process.exit(0);
-    })
-    .catch(() => {
-      getSql().end();
-      process.exit(1);
-    });
+    }
+  }
+
+  runStandalone().then(() => {
+    process.exit(0);
+  }).catch((err) => {
+    console.error("[SLEEP SERVICE] Standalone run failed:", err);
+    process.exit(1);
+  });
 }

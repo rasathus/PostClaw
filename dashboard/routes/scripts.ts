@@ -8,6 +8,7 @@
 import { Router } from "../router.js";
 import { parseBody, sendJson, sendError } from "../helpers.js";
 import { ScriptRunSchema } from "../../schemas/validation.js";
+import { loadConfig } from "../../services/config.js";
 
 // =============================================================================
 // REGISTER ROUTES
@@ -21,8 +22,10 @@ export function registerScriptRoutes(router: Router): void {
 
     try {
       const { runSleepCycle } = await import("../../scripts/sleep_cycle.js");
+      const agentConfig = await loadConfig(data.agentId);
+
       // Run async — don't block the response
-      const statsPromise = runSleepCycle({ agentId: data.agentId });
+      const statsPromise = runSleepCycle({ agentId: data.agentId, config: agentConfig.sleep });
 
       // Return immediately, but also await and log
       sendJson(res, 202, {

@@ -65,7 +65,7 @@ export const DEFAULT_CONFIG: PostClawConfig = {
     memoryRules: `You have persistent memory backed by PostgreSQL. Relevant facts are auto-injected into context with UUID tags. Silently save new facts, correct outdated ones, and link related knowledge — never ask permission. Assign appropriate tiers (permanent, stable, daily) and categories when storing.`,
     personaRules: `Your identity rules are automatically injected based on context relevance. You can modify your own persona traits when explicitly asked, but do not mention the persona system unprompted.`,
     heartbeatRules: `Read {{heartbeatFilePath}} if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK..`,
-    heartbeatFilePath: "/home/cl/.openclaw/workspace/HEARTBEAT.md",
+    heartbeatFilePath: "~/.openclaw/workspace/HEARTBEAT.md",
   }
 };
 
@@ -78,11 +78,15 @@ let _runtimeConfig: Record<string, PostClawConfig> = {};
 export async function loadConfig(agentId: string = "main"): Promise<PostClawConfig> {
   try {
     const sql = getSql();
-    const rows = await sql`
-      SELECT config_key, config_value 
-      FROM plugin_config 
-      WHERE agent_id = ${agentId}
-    `;
+    let rows: any[] = [];
+    await sql.begin(async (tx: any) => {
+      await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
+      rows = await tx`
+        SELECT config_key, config_value 
+        FROM plugin_config 
+        WHERE agent_id = ${agentId}
+      `;
+    });
 
     // Start with a clean deep copy of defaults to prevent mutating the global DEFAULT_CONFIG
     const merged: PostClawConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
@@ -94,9 +98,9 @@ export async function loadConfig(agentId: string = "main"): Promise<PostClawConf
           // completely overwrite prompts with what is in DB allows dynamically removing prompts
           merged[key] = row.config_value;
         } else {
-          merged[key] = { 
-            ...(merged[key] as object), 
-            ...(row.config_value as object) 
+          merged[key] = {
+            ...(merged[key] as object),
+            ...(row.config_value as object)
           } as any;
         }
       }
@@ -115,14 +119,14 @@ export async function loadConfig(agentId: string = "main"): Promise<PostClawConf
 export async function saveConfig(agentId: string, config: PostClawConfig): Promise<void> {
   try {
     const sql = getSql();
-    
+
     // Upsert each main section as a JSONB value
     await sql.begin(async (tx: any) => {
       await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
       for (const [key, value] of Object.entries(config)) {
         await tx`
           INSERT INTO plugin_config (agent_id, config_key, config_value)
-          VALUES (${agentId}, ${key}, ${value as any})
+          VALUES (${agentId}, ${key}, ${tx.json(value as any)})
           ON CONFLICT (agent_id, config_key) 
           DO UPDATE SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP
         `;
