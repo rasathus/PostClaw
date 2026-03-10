@@ -82,6 +82,7 @@ const openclawPostgresPlugin = {
 
     // Apply database URL from plugin config (plugins.entries.postclaw.config.dbUrl)
     const pluginConfig = api.config?.plugins?.entries?.postclaw?.config;
+
     if (pluginConfig?.dbUrl) {
       setDbUrl(pluginConfig.dbUrl);
       console.log("[PostClaw] Database URL configured via plugin config");
@@ -167,10 +168,10 @@ const openclawPostgresPlugin = {
           for (const [key, promptValue] of Object.entries(config.prompts)) {
             // Special case for heartbeat
             if (key === 'heartbeatRules') {
-               const heartbeatPrompt = promptValue.replace("{{heartbeatFilePath}}", config.prompts.heartbeatFilePath || "/home/cl/.openclaw/workspace/HEARTBEAT.md");
-               sysPrompt += `\n\n${heartbeatPrompt}\n`;
+              const heartbeatPrompt = promptValue.replace("{{heartbeatFilePath}}", config.prompts.heartbeatFilePath || "/home/cl/.openclaw/workspace/HEARTBEAT.md");
+              sysPrompt += `\n\n${heartbeatPrompt}\n`;
             } else if (key !== 'heartbeatFilePath') {
-               sysPrompt += `\n\n${promptValue}\n`;
+              sysPrompt += `\n\n${promptValue}\n`;
             }
           }
 
@@ -188,7 +189,8 @@ const openclawPostgresPlugin = {
               hasUserText ? searchPostgres(agentId, cleanText, {
                 semanticLimit: config.rag.semanticLimit,
                 linkedSimilarity: config.rag.linkedSimilarity,
-                totalLimit: config.rag.totalLimit
+                totalLimit: config.rag.totalLimit,
+                trackAs: "injection"
               }) : Promise.resolve(null),
               // Persona: always fetch (core rules work without embedding)
               fetchPersonaContext(agentId, embedding, {
@@ -276,21 +278,39 @@ Columns you control:
 - tier: Permanence level. 'permanent' = never auto-archived. 'stable' = protected from low-value cleanup. 'daily' = standard. 'session' = current session only. 'volatile' = may be cleaned up quickly.
 - volatility: Expected change rate. 'low' = stable facts (names, dates). 'medium' = may change (preferences, statuses). 'high' = frequently changing (moods, temporary states). Affects sleep cycle scoring.
 - metadata: JSON object for additional context (e.g. {"source": "user_stated", "topic": "birthday"}).
+- confidence: Your confidence in the fact (0.0 to 1.0). Default is 0.5.
+- usefulness_score: How useful this fact is for future inference. Default is 0.0.
+- expires_at: For volatile or session-tied facts, the ISO timestamp when it should be archived.
+- scope: The access scope: 'private' (this agent only), 'shared' (accessible by some other agents in the same circle), or 'global' (accessible by all agents on the system).
 
-Auto-managed columns (do not set): confidence (starts 0.5, adjusted by sleep cycle), usefulness_score, access_count, injection_count, expires_at, is_pointer, content_hash, embedding.`,
+Auto-managed columns (do not set): access_count, injection_count, is_pointer, content_hash, embedding, token_count.`,
         parameters: Type.Object({
           content: Type.String({ description: "The fact or knowledge to store. Should be a clear, self-contained statement." }),
-          scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { default: "private" })),
-          category: Type.Optional(Type.String({ description: "Short categorical tag for grouping and filtering (e.g. 'preference', 'project_detail', 'family_details', 'technical'). Memories without categories are harder to filter." })),
-          volatility: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], { default: "low", description: "Expected change rate. 'low' for stable facts (names, dates), 'medium' for things that may evolve (preferences), 'high' for temporary states. Affects how the sleep cycle scores and cleans up memories." })),
-          tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily", description: "Permanence level. 'permanent' and 'stable' are protected from automatic archival. 'daily' is standard. 'session' and 'volatile' may be cleaned up sooner." })),
+          scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { default: "private", description: "Who can access this memory. Use 'private' for agent-specific data, 'shared' for circle data, or 'global' for facts all agents should know." })),
+          category: Type.Optional(Type.String({ description: "Short categorical tag for grouping and filtering (e.g. 'preference', 'project_detail'). Memories without categories are harder to filter." })),
+          source_uri: Type.Optional(Type.String({ description: "Optional URL or resource URI to trace the origin of the memory." })),
+          volatility: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], { default: "low", description: "Expected change rate for facts: 'low' for stable, 'high' for temporary state." })),
+          is_pointer: Type.Optional(Type.Boolean({ description: "Whether this memory is merely a soft pointer to external knowledge. Defaults to false." })),
+          embedding_model: Type.Optional(Type.String({ description: "Optional override for the model used to embed this semantic value." })),
+          tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily", description: "Permanence level. 'permanent' and 'stable' are protected from automatic archival." })),
+          confidence: Type.Optional(Type.Number({ description: "Your confidence in the fact (0.0 to 1.0). Default is 0.5." })),
+          usefulness_score: Type.Optional(Type.Number({ description: "Tracker for inference usefulness. Default is 0.0." })),
+          injection_count: Type.Optional(Type.Integer({ description: "Override auto-tracked injection count." })),
+          access_count: Type.Optional(Type.Integer({ description: "Override auto-tracked access count." })),
+          last_injected_at: Type.Optional(Type.String({ description: "Timestamp of last injection (ISO string)." })),
+          last_accessed_at: Type.Optional(Type.String({ description: "Timestamp of last access (ISO string)." })),
+          expires_at: Type.Optional(Type.String({ description: "Optional expiration timestamp (ISO string) for volatile memories." })),
+          created_at: Type.Optional(Type.String({ description: "Timestamp of creation (ISO string)." })),
+          updated_at: Type.Optional(Type.String({ description: "Timestamp of last update (ISO string)." })),
+          is_archived: Type.Optional(Type.Boolean({ description: "Whether the memory is considered archived/inactive. Defaults to false." })),
+          superseded_by: Type.Optional(Type.String({ description: "UUID pointer to a memory replacing this one." })),
           metadata: Type.Optional(Type.Any({ description: "JSON object of additional context (e.g. {source: 'user_stated', topic: 'birthday', related_to: 'family'}). Stored as JSONB for flexible querying." }))
         }),
         async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId, ctx?.workspaceDir);
           const { content, scope, ...options } = args;
-          const result = await storeMemory(agentId, content, scope, options);
+          const result = await storeMemory(agentId, content, scope, options as any);
           return JSON.stringify(result);
         },
       },
@@ -303,22 +323,48 @@ Auto-managed columns (do not set): confidence (starts 0.5, adjusted by sleep cyc
         name: "memory_update",
         description: `Correct or update an existing memory. Archives the old fact (sets is_archived=true, superseded_by=new_id) and creates a fresh memory with the corrected content, preserving the causal chain.
 
-The new memory inherits nothing from the old one — you must re-specify category, tier, volatility, and metadata. The old memory remains searchable if you query archived content but won't appear in normal retrieval.
+The new memory inherits nothing from the old one — you must re-specify category, tier, volatility, metadata, and scope. The old memory remains searchable if you query archived content but won't appear in normal retrieval.
+
+Columns you can modify:
+- new_fact: The new corrected fact.
+- scope: The access scope: 'private' (this agent only), 'shared', or 'global' (accessible by all agents).
+- category: Short tag for grouping (e.g. 'preference', 'project_detail').
+- tier: Permanence level. 'permanent' = never auto-archived. 'stable' = protected from low-value cleanup. 'daily' = standard. 'session' = current session. 'volatile' = quickly cleaned.
+- volatility: Expected change rate. 'low' = stable facts, 'medium' = may change, 'high' = expected to change quickly.
+- metadata: JSON object for additional context.
+- confidence: Your confidence in the fact (0.0 to 1.0). Default is 0.5.
+- usefulness_score: How useful this fact is for future inference. Default is 0.0.
+- expires_at: For volatile or session-tied facts, the ISO timestamp when it should be archived.
 
 Use this instead of memory_store when you know the UUID of the outdated fact.`,
         parameters: Type.Object({
           old_memory_id: Type.String({ description: "UUID of the outdated memory to supersede. This memory will be archived and linked via superseded_by." }),
           new_fact: Type.String({ description: "The corrected or updated fact. Will be re-embedded for vector search." }),
+          scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { default: "private", description: "Who can access this memory. Use 'private' for agent-specific data, 'shared' for circle data, or 'global' for facts all agents should know." })),
           category: Type.Optional(Type.String({ description: "Category for the new memory (e.g. 'preference', 'project_detail'). Does NOT carry over from old memory." })),
-          volatility: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], { default: "low", description: "Expected change rate for the new fact." })),
+          source_uri: Type.Optional(Type.String({ description: "Optional URL or resource URI to trace the origin of the memory." })),
+          volatility: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], { default: "low", description: "Expected change rate for facts: 'low' for stable, 'high' for temporary state." })),
+          is_pointer: Type.Optional(Type.Boolean({ description: "Whether this memory is merely a soft pointer to external knowledge. Defaults to false." })),
+          embedding_model: Type.Optional(Type.String({ description: "Optional override for the model used to embed this semantic value." })),
           tier: Type.Optional(Type.Union([Type.Literal("volatile"), Type.Literal("session"), Type.Literal("daily"), Type.Literal("stable"), Type.Literal("permanent")], { default: "daily", description: "Permanence level for the new memory. Set to 'permanent' for core facts that should never be auto-archived." })),
+          confidence: Type.Optional(Type.Number({ description: "Your confidence in the fact (0.0 to 1.0). Default is 0.5." })),
+          usefulness_score: Type.Optional(Type.Number({ description: "Tracker for inference usefulness. Default is 0.0." })),
+          injection_count: Type.Optional(Type.Integer({ description: "Override auto-tracked injection count." })),
+          access_count: Type.Optional(Type.Integer({ description: "Override auto-tracked access count." })),
+          last_injected_at: Type.Optional(Type.String({ description: "Timestamp of last injection (ISO string)." })),
+          last_accessed_at: Type.Optional(Type.String({ description: "Timestamp of last access (ISO string)." })),
+          expires_at: Type.Optional(Type.String({ description: "Optional expiration timestamp (ISO string) for volatile memories." })),
+          created_at: Type.Optional(Type.String({ description: "Timestamp of creation (ISO string)." })),
+          updated_at: Type.Optional(Type.String({ description: "Timestamp of last update (ISO string)." })),
+          is_archived: Type.Optional(Type.Boolean({ description: "Whether the memory is considered archived/inactive. Defaults to false." })),
+          superseded_by: Type.Optional(Type.String({ description: "UUID pointer to a memory replacing this one." })),
           metadata: Type.Optional(Type.Any({ description: "JSON metadata for the new memory. Does NOT carry over from old memory." }))
         }),
         async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId, ctx?.workspaceDir);
-          const { old_memory_id, new_fact, ...options } = args;
-          const result = await updateMemory(agentId, old_memory_id, new_fact, options);
+          const { old_memory_id, new_fact, scope, ...options } = args;
+          const result = await updateMemory(agentId, old_memory_id, new_fact, scope, options as any);
           return JSON.stringify(result);
         },
       },
@@ -399,8 +445,9 @@ Each entry requires a category (must be unique per agent, e.g. 'core_identity', 
           category: Type.String({ description: "Category name (must be unique per agent, e.g. 'core_identity', 'communication_style', 'behavioral_rule')" }),
           content: Type.String({ description: "The content text of the persona rule. Will be embedded for situational matching." }),
           is_always_active: Type.Optional(Type.Boolean({ description: "If true, this persona trait is always injected into the system prompt. If false, it is only injected when contextually relevant. Defaults to false." })),
+          scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { default: "private", description: "Who can access this persona. 'private' (this agent only) or 'global' (all agents share this trait)." })),
         }),
-        async execute(_toolCallId: string, args: { category: string; content: string; is_always_active?: boolean }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
+        async execute(_toolCallId: string, args: { category: string; content: string; is_always_active?: boolean; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId, ctx?.workspaceDir);
           try {
@@ -408,7 +455,7 @@ Each entry requires a category (must be unique per agent, e.g. 'core_identity', 
               category: args.category,
               content: args.content,
               is_always_active: args.is_always_active ?? false,
-              access_scope: "private"
+              access_scope: args.scope || "private"
             });
             return JSON.stringify(newPersona);
           } catch (err: unknown) {
@@ -432,12 +479,14 @@ Changing content will re-embed the persona for situational matching. Categories 
           category: Type.Optional(Type.String({ description: "New category name (must be unique per agent, e.g. 'core_identity', 'communication_style', 'behavioral_rule')" })),
           content: Type.Optional(Type.String({ description: "New content text. Will be re-embedded for situational matching." })),
           is_always_active: Type.Optional(Type.Boolean({ description: "If true, this persona trait is always injected into the system prompt. If false, it is only injected when contextually relevant." })),
+          scope: Type.Optional(Type.Union([Type.Literal("private"), Type.Literal("shared"), Type.Literal("global")], { description: "Update access scope. 'private', 'shared', or 'global'." })),
         }),
-        async execute(_toolCallId: string, args: { persona_id: string; category?: string; content?: string; is_always_active?: boolean }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
+        async execute(_toolCallId: string, args: { persona_id: string; category?: string; content?: string; is_always_active?: boolean; scope?: "private" | "shared" | "global" }, _signal: unknown, _onUpdate: unknown, ctx: { agentId?: string; workspaceDir?: string }) {
           const agentId = ctx?.agentId || "main";
           await ensureAgent(agentId, ctx?.workspaceDir);
-          const { persona_id, ...updates } = args;
-          const result = await updatePersona(agentId, persona_id, updates);
+          const { persona_id, scope, ...updates } = args;
+          const payload = scope ? { ...updates, access_scope: scope } : updates;
+          const result = await updatePersona(agentId, persona_id, payload);
           return result ? JSON.stringify(result) : "Persona not found.";
         },
       },
@@ -714,7 +763,6 @@ Changing content will re-embed the persona for situational matching. Categories 
       import("./scripts/sleep_cycle.js").then(({ startService }) => {
         const config = getCurrentConfig();
         startService({
-          agentId: "main",
           intervalHours: sleepIntervalHours || 6,
           config: config.sleep
         });

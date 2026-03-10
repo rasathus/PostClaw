@@ -133,18 +133,64 @@
       </div>
 
       <!-- Memory form -->
-      <div id="memory-form" class="form-card ambient amb-surface amb-chamfer amb-elevation-2" style="display:none;">
+      <div id="memory-form" class="form-card ambient amb-surface amb-chamfer amb-elevation-2" style="display:none; max-width: 1000px; max-height: 80vh; overflow-y: auto;">
         <input type="hidden" id="memory-form-id" />
         <div class="form-row">
           <label for="memory-content">Content</label>
           <textarea id="memory-content" rows="3" placeholder="Memory content..."
             class="ambient amb-surface-concave amb-fillet amb-elevation-0"></textarea>
         </div>
-        <div class="form-row form-row-grid">
+        <div class="form-row form-row-grid" style="grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));">
+          <div>
+            <label for="memory-agent_id">Agent ID</label>
+            <input id="memory-agent_id" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-access_scope">Access Scope</label>
+            <select id="memory-access_scope" class="ambient amb-surface-concave amb-fillet amb-elevation-0">
+              <option value="private">Private</option>
+              <option value="shared">Shared</option>
+              <option value="global">Global</option>
+            </select>
+          </div>
+          <div>
+            <label for="memory-content_hash">Content Hash</label>
+            <input id="memory-content_hash" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
           <div>
             <label for="memory-category">Category</label>
-            <input id="memory-category" type="text" placeholder="e.g., preference"
-              class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+            <input id="memory-category" type="text" placeholder="e.g., preference" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-source_uri">Source URI</label>
+            <input id="memory-source_uri" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-volatility">Volatility</label>
+            <select id="memory-volatility" class="ambient amb-surface-concave amb-fillet amb-elevation-0">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+          <div>
+            <label for="memory-is_pointer">Is Pointer</label>
+            <select id="memory-is_pointer" class="ambient amb-surface-concave amb-fillet amb-elevation-0">
+              <option value="false">False</option>
+              <option value="true">True</option>
+            </select>
+          </div>
+          <div>
+            <label for="memory-embedding_model">Embedding Model</label>
+            <input id="memory-embedding_model" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-token_count">Token Count</label>
+            <input id="memory-token_count" type="number" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-confidence">Confidence</label>
+            <input id="memory-confidence" type="number" step="0.01" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
           </div>
           <div>
             <label for="memory-tier">Tier</label>
@@ -156,6 +202,57 @@
               <option value="volatile">Volatile</option>
             </select>
           </div>
+          <div>
+            <label for="memory-usefulness_score">Usefulness Score</label>
+            <input id="memory-usefulness_score" type="number" step="0.1" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-injection_count">Injection Count</label>
+            <input id="memory-injection_count" type="number" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-access_count">Access Count</label>
+            <input id="memory-access_count" type="number" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-last_injected_at">Last Injected At (ISO)</label>
+            <input id="memory-last_injected_at" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-last_accessed_at">Last Accessed At (ISO)</label>
+            <input id="memory-last_accessed_at" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-expires_at">Expires At (ISO)</label>
+            <input id="memory-expires_at" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-created_at">Created At (ISO)</label>
+            <input id="memory-created_at" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-updated_at">Updated At (ISO)</label>
+            <input id="memory-updated_at" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+          <div>
+            <label for="memory-is_archived">Is Archived</label>
+            <select id="memory-is_archived" class="ambient amb-surface-concave amb-fillet amb-elevation-0">
+              <option value="false">False</option>
+              <option value="true">True</option>
+            </select>
+          </div>
+          <div>
+            <label for="memory-superseded_by">Superseded By (UUID)</label>
+            <input id="memory-superseded_by" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+          </div>
+        </div>
+        <div class="form-row">
+          <label for="memory-embedding">Embedding (Raw JSON array)</label>
+          <input id="memory-embedding" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
+        </div>
+        <div class="form-row">
+          <label for="memory-metadata">Metadata (Raw JSON object)</label>
+          <input id="memory-metadata" type="text" class="ambient amb-surface-concave amb-fillet amb-elevation-0" />
         </div>
 
         <!-- Memory Links Section -->

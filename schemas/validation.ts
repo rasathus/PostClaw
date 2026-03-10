@@ -15,14 +15,23 @@ export const ChatRoleSchema = z.enum(["system", "user", "assistant", "tool"]);
 
 export const MemoryOptionsSchema = z.object({
     category: z.string().max(50).optional().nullable(),
-    source_uri: z.string().url().max(512).optional().nullable(),
+    source_uri: z.string().max(512).optional().nullable(),
     volatility: VolatilitySchema.optional().nullable(),
     is_pointer: z.boolean().optional().nullable(),
+    embedding_model: z.string().max(100).optional().nullable(),
     token_count: z.number().int().optional().nullable(),
     tier: MemoryTierSchema.optional().nullable(),
     confidence: z.number().min(0).max(1).optional().nullable(),
     usefulness_score: z.number().optional().nullable(),
-    expires_at: z.date().optional().nullable(),
+    injection_count: z.number().int().optional().nullable(),
+    access_count: z.number().int().optional().nullable(),
+    last_injected_at: z.coerce.date().optional().nullable(),
+    last_accessed_at: z.coerce.date().optional().nullable(),
+    expires_at: z.coerce.date().optional().nullable(),
+    created_at: z.coerce.date().optional().nullable(),
+    updated_at: z.coerce.date().optional().nullable(),
+    is_archived: z.boolean().optional().nullable(),
+    superseded_by: z.string().uuid().optional().nullable(),
     metadata: z.record(z.string(), z.any()).optional().nullable(),
 });
 
@@ -39,6 +48,7 @@ export type StoreMemoryInput = z.infer<typeof StoreMemoryInputSchema>;
 export const UpdateMemoryInputSchema = z.object({
     oldMemoryId: z.string().uuid(),
     newFact: z.string().min(1),
+    scope: AccessScopeSchema.default("private"),
     options: MemoryOptionsSchema.optional(),
 });
 
@@ -117,12 +127,12 @@ export type LinkCandidateRow = z.infer<typeof LinkCandidateRowSchema>;
 
 /** OpenAI-compatible tool definition (function calling format). */
 export interface ChatCompletionTool {
-  type: "function";
-  function: {
-    name: string;
-    description?: string;
-    parameters?: Record<string, unknown>;
-  };
+    type: "function";
+    function: {
+        name: string;
+        description?: string;
+        parameters?: Record<string, unknown>;
+    };
 }
 
 // =============================================================================
@@ -260,6 +270,10 @@ export const MemoryStoreArgsSchema = z.object({
     volatility: VolatilitySchema.optional(),
     tier: MemoryTierSchema.optional(),
     metadata: z.record(z.string(), z.any()).optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    expires_at: z.string().optional(),
+    token_count: z.number().int().optional(),
+    usefulness_score: z.number().optional(),
 });
 
 export type MemoryStoreArgs = z.infer<typeof MemoryStoreArgsSchema>;
@@ -267,18 +281,23 @@ export type MemoryStoreArgs = z.infer<typeof MemoryStoreArgsSchema>;
 export const MemoryUpdateArgsSchema = z.object({
     old_memory_id: z.string(),
     new_fact: z.string(),
+    scope: AccessScopeSchema.optional().default("private"),
     category: z.string().optional(),
     volatility: VolatilitySchema.optional(),
     tier: MemoryTierSchema.optional(),
     metadata: z.record(z.string(), z.any()).optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    expires_at: z.string().optional(),
+    token_count: z.number().int().optional(),
+    usefulness_score: z.number().optional(),
 });
 
 export type MemoryUpdateArgs = z.infer<typeof MemoryUpdateArgsSchema>;
 
 export const MemoryLinkArgsSchema = z.object({
-    source_id: z.string(),
-    target_id: z.string(),
-    relationship: z.string(),
+    source_id: z.string().describe("UUID of the source node (memory or persona trait)"),
+    target_id: z.string().describe("UUID of the target node (memory or persona trait)"),
+    relationship: z.string().describe("Relationship type: 'related_to', 'elaborates', 'contradicts', 'depends_on', 'part_of', 'defines', or 'supports'"),
 });
 
 export type MemoryLinkArgs = z.infer<typeof MemoryLinkArgsSchema>;
@@ -352,12 +371,30 @@ export type DashboardMemoryCreate = z.infer<typeof DashboardMemoryCreateSchema>;
 
 /** Update a memory via dashboard */
 export const DashboardMemoryUpdateSchema = z.object({
+    agent_id: z.string().optional(),
+    access_scope: AccessScopeSchema.optional(),
     content: z.string().min(1).optional(),
+    content_hash: z.string().optional(),
     category: z.string().max(50).optional().nullable(),
-    tier: MemoryTierSchema.optional(),
+    source_uri: z.string().max(512).optional().nullable(),
     volatility: VolatilitySchema.optional(),
+    is_pointer: z.boolean().optional(),
+    embedding: z.any().optional(),
+    embedding_model: z.string().optional(),
+    token_count: z.number().int().optional(),
+    confidence: z.number().optional(),
+    tier: MemoryTierSchema.optional(),
+    usefulness_score: z.number().optional(),
+    injection_count: z.number().int().optional(),
+    access_count: z.number().int().optional(),
+    last_injected_at: z.coerce.date().optional().nullable(),
+    last_accessed_at: z.coerce.date().optional().nullable(),
+    created_at: z.coerce.date().optional(),
+    updated_at: z.coerce.date().optional(),
+    expires_at: z.coerce.date().optional().nullable(),
     is_archived: z.boolean().optional(),
-    metadata: z.record(z.string(), z.any()).optional(),
+    metadata: z.record(z.string(), z.any()).optional().nullable(),
+    superseded_by: z.string().uuid().optional().nullable(),
 });
 
 export type DashboardMemoryUpdate = z.infer<typeof DashboardMemoryUpdateSchema>;

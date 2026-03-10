@@ -10,7 +10,7 @@
 // GLOBALS
 // =============================================================================
 
-let currentAgent = "main";
+let currentAgent = localStorage.getItem("postclaw-selected-agent") || "main";
 const API = "";
 let memoryPage = { offset: 0, limit: 50, total: 0 };
 let graphInstances = { simulation: null, svg: null, g: null, zoom: null };
@@ -82,6 +82,7 @@ async function loadAgents() {
 
 document.getElementById("agent-select").addEventListener("change", (e) => {
   currentAgent = e.target.value;
+  localStorage.setItem("postclaw-selected-agent", currentAgent);
   loadPersonas();
   loadMemories();
   loadWorkspaceFiles();
@@ -210,16 +211,17 @@ async function loadMemories() {
   }
 
   container.innerHTML = `
+    <div style="overflow-x: auto;">
     <table class="data-table">
       <thead><tr>
-        <th>Content</th><th>Category</th><th>Tier</th><th>Vol.</th><th>Conf.</th>
-        <th>Score</th><th>Acc.</th><th>Inj.</th><th>Created</th><th>Actions</th>
+        <th>ID</th><th>Agent ID</th><th>Access Scope</th><th>Content</th><th>Hash</th><th>Category</th><th>Source URI</th><th>Volatility</th><th>Pointer?</th><th>Embed</th><th>Model</th><th>Tokens</th><th>Conf.</th><th>Tier</th><th>Score</th><th>Inj.</th><th>Acc.</th><th>Last Inj.</th><th>Last Acc.</th><th>Created</th><th>Updated</th><th>Expires</th><th>Archived?</th><th>Metadata</th><th>Superseded</th><th>Actions</th>
       </tr></thead>
       <tbody>
         ${memories
       .map(
         (m) => {
           const created = m.created_at ? new Date(m.created_at).toLocaleDateString() : '—';
+          const updated = m.updated_at ? new Date(m.updated_at).toLocaleDateString() : '—';
           const conf = m.confidence != null ? m.confidence.toFixed(2) : '—';
           const vol = m.volatility || '—';
           const score = m.usefulness_score != null ? m.usefulness_score.toFixed(1) : '—';
@@ -227,16 +229,32 @@ async function loadMemories() {
           const inj = m.injection_count ?? 0;
           return `
           <tr${m.is_pointer ? ' class="memory-pointer"' : ''}>
-            <td title="${(m.content || '').replace(/"/g, '&quot;')}">${truncate(m.content, 50)}</td>
+            <td title="${m.id}">${truncate(m.id, 8)}</td>
+            <td>${m.agent_id}</td>
+            <td>${m.access_scope}</td>
+            <td title="${(m.content || '').replace(/"/g, '&quot;')}">${truncate(m.content, 30)}</td>
+            <td title="${m.content_hash}">${truncate(m.content_hash, 8)}</td>
             <td>${m.category || '—'}</td>
-            <td>${badge(m.tier || 'daily')}</td>
+            <td title="${m.source_uri}">${truncate(m.source_uri, 15)}</td>
             <td><span class="vol-${vol}">${vol}</span></td>
+            <td>${m.is_pointer ? 'Y' : 'N'}</td>
+            <td title="${m.embedding ? 'Vector exists' : 'None'}">${m.embedding ? 'Vector' : 'None'}</td>
+            <td>${m.embedding_model}</td>
+            <td>${m.token_count}</td>
             <td>${conf}</td>
+            <td>${badge(m.tier || 'daily')}</td>
             <td>${score}</td>
-            <td>${acc}</td>
             <td>${inj}</td>
+            <td>${acc}</td>
+            <td>${m.last_injected_at ? new Date(m.last_injected_at).toLocaleDateString() : '—'}</td>
+            <td>${m.last_accessed_at ? new Date(m.last_accessed_at).toLocaleDateString() : '—'}</td>
             <td>${created}</td>
-            <td class="actions">
+            <td>${updated}</td>
+            <td>${m.expires_at ? new Date(m.expires_at).toLocaleDateString() : '—'}</td>
+            <td>${m.is_archived ? 'Y' : 'N'}</td>
+            <td title="${m.metadata ? JSON.stringify(m.metadata).replace(/"/g, '&quot;') : ''}">${m.metadata ? truncate(JSON.stringify(m.metadata), 15) : '—'}</td>
+            <td title="${m.superseded_by}">${truncate(m.superseded_by, 8)}</td>
+            <td class="actions" style="position: sticky; right: 0; background: var(--amb-c-surface);">
               <button class="btn-sm btn-secondary" onclick="editMemory('${m.id}')">✏️</button>
               <button class="btn-sm btn-danger" onclick="deleteMemory('${m.id}')">🗑️</button>
             </td>
@@ -246,6 +264,7 @@ async function loadMemories() {
       .join('')}
       </tbody>
     </table>
+    </div>
   `;
 
   renderPagination();
@@ -299,10 +318,22 @@ function debounce(fn, ms) {
 }
 
 document.getElementById("btn-new-memory").addEventListener("click", () => {
+  const fields = ['id', 'agent_id', 'access_scope', 'content', 'content_hash', 'category', 'source_uri', 'volatility', 'is_pointer', 'embedding', 'embedding_model', 'token_count', 'confidence', 'tier', 'usefulness_score', 'injection_count', 'access_count', 'last_injected_at', 'last_accessed_at', 'expires_at', 'created_at', 'updated_at', 'is_archived', 'metadata', 'superseded_by'];
+  for (const f of fields) {
+    const el = document.getElementById("memory-" + f);
+    if (el) {
+      if (el.tagName === 'SELECT') {
+        el.selectedIndex = 0;
+        if (f === 'is_archived' || f === 'is_pointer') el.value = "false";
+        if (f === 'tier') el.value = "daily";
+        if (f === 'volatility') el.value = "low";
+        if (f === 'access_scope') el.value = "private";
+      } else {
+        el.value = "";
+      }
+    }
+  }
   document.getElementById("memory-form-id").value = "";
-  document.getElementById("memory-content").value = "";
-  document.getElementById("memory-category").value = "";
-  document.getElementById("memory-tier").value = "daily";
   document.getElementById("memory-edge-list").innerHTML = "";
   document.getElementById("memory-form").style.display = "block";
 });
@@ -313,11 +344,71 @@ document.getElementById("btn-cancel-memory").addEventListener("click", () => {
 
 document.getElementById("btn-save-memory").addEventListener("click", async () => {
   const id = document.getElementById("memory-form-id").value;
-  const body = {
-    content: document.getElementById("memory-content").value,
-    category: document.getElementById("memory-category").value || undefined,
-    tier: document.getElementById("memory-tier").value,
+
+  const getVal = (f) => {
+    const el = document.getElementById("memory-" + f);
+    return el && el.value !== "" ? el.value : undefined;
   };
+
+  const getNum = (f) => {
+    const el = document.getElementById("memory-" + f);
+    return el && el.value !== "" ? Number(el.value) : undefined;
+  };
+
+  const getBool = (f) => {
+    const el = document.getElementById("memory-" + f);
+    return el && el.value !== "" ? el.value === "true" : undefined;
+  };
+
+  let metadataObj = undefined;
+  const rawMeta = getVal("metadata");
+  if (rawMeta) {
+    try {
+      metadataObj = JSON.parse(rawMeta);
+    } catch (e) {
+      return toast("Invalid JSON in Metadata field", "error");
+    }
+  }
+
+  let embeddingObj = undefined;
+  const rawEmbed = getVal("embedding");
+  if (rawEmbed) {
+    try {
+      embeddingObj = JSON.parse(rawEmbed);
+    } catch (e) {
+      return toast("Invalid JSON in Embedding field", "error");
+    }
+  }
+
+  const body = {
+    content: getVal("content") || "",
+    agent_id: getVal("agent_id"),
+    access_scope: getVal("access_scope"),
+    content_hash: getVal("content_hash"),
+    category: getVal("category"),
+    source_uri: getVal("source_uri"),
+    volatility: getVal("volatility"),
+    is_pointer: getBool("is_pointer"),
+    embedding: embeddingObj,
+    embedding_model: getVal("embedding_model"),
+    token_count: getNum("token_count"),
+    confidence: getNum("confidence"),
+    tier: getVal("tier"),
+    usefulness_score: getNum("usefulness_score"),
+    injection_count: getNum("injection_count"),
+    access_count: getNum("access_count"),
+    last_injected_at: getVal("last_injected_at"),
+    last_accessed_at: getVal("last_accessed_at"),
+    created_at: getVal("created_at"),
+    updated_at: getVal("updated_at"),
+    expires_at: getVal("expires_at"),
+    is_archived: getBool("is_archived"),
+    metadata: metadataObj,
+    superseded_by: getVal("superseded_by")
+  };
+
+  // Clean up undefined properties to avoid sending huge sparse objects when creating
+  Object.keys(body).forEach(k => body[k] === undefined && delete body[k]);
 
   const res = id
     ? await api(`/api/memories/${id}`, { method: "PUT", body: JSON.stringify(body) })
@@ -337,9 +428,37 @@ window.editMemory = async function (id) {
   if (!res.ok) return toast("Not found", "error");
   const m = res.data;
   document.getElementById("memory-form-id").value = m.id;
-  document.getElementById("memory-content").value = m.content;
-  document.getElementById("memory-category").value = m.category || "";
-  document.getElementById("memory-tier").value = m.tier || "daily";
+
+  const setVal = (f, v) => {
+    const el = document.getElementById("memory-" + f);
+    if (el) el.value = v != null ? String(v) : "";
+  };
+
+  setVal("agent_id", m.agent_id);
+  setVal("access_scope", m.access_scope);
+  setVal("content", m.content);
+  setVal("content_hash", m.content_hash);
+  setVal("category", m.category);
+  setVal("source_uri", m.source_uri);
+  setVal("volatility", m.volatility);
+  setVal("is_pointer", m.is_pointer);
+  setVal("embedding", m.embedding ? JSON.stringify(m.embedding) : "");
+  setVal("embedding_model", m.embedding_model);
+  setVal("token_count", m.token_count);
+  setVal("confidence", m.confidence);
+  setVal("tier", m.tier);
+  setVal("usefulness_score", m.usefulness_score);
+  setVal("injection_count", m.injection_count);
+  setVal("access_count", m.access_count);
+  setVal("last_injected_at", m.last_injected_at);
+  setVal("last_accessed_at", m.last_accessed_at);
+  setVal("created_at", m.created_at);
+  setVal("updated_at", m.updated_at);
+  setVal("expires_at", m.expires_at);
+  setVal("is_archived", m.is_archived);
+  setVal("metadata", m.metadata ? JSON.stringify(m.metadata) : "");
+  setVal("superseded_by", m.superseded_by);
+
   document.getElementById("memory-form").style.display = "block";
   loadMemoryEdges(id);
 };
@@ -904,7 +1023,7 @@ document.getElementById("btn-run-sleep").addEventListener("click", async () => {
   statusEl.textContent = "Running sleep cycle…";
   statusEl.className = "script-status running";
 
-  const res = await api("/api/scripts/sleep", { method: "POST", body: JSON.stringify({}) });
+  const res = await api("/api/scripts/sleep", { method: "POST", body: JSON.stringify({ agentId: currentAgent }) });
 
   if (res.ok) {
     statusEl.textContent = "✅ " + (res.data?.message || "Complete");
@@ -925,7 +1044,7 @@ document.getElementById("btn-run-persona-import").addEventListener("click", asyn
 
   const res = await api("/api/scripts/persona-import", {
     method: "POST",
-    body: JSON.stringify({ file }),
+    body: JSON.stringify({ file, agentId: currentAgent }),
   });
 
   if (res.ok) {
@@ -951,10 +1070,10 @@ const CONFIG_MAP = [
   { id: "cfg-prompt-persona", path: "prompts.personaRules", type: "text" },
   { id: "cfg-prompt-heartbeat", path: "prompts.heartbeatRules", type: "text" },
   { id: "cfg-prompt-heartbeat-path", path: "prompts.heartbeatFilePath", type: "text" },
-  { id: "cfg-sleep-dedup-threshold", path: "sleep.dedupSimilarityThreshold", type: "number" },
+  { id: "cfg-sleep-dedup-threshold", path: "sleep.duplicateSimilarityThreshold", type: "number" },
   { id: "cfg-sleep-low-value-age", path: "sleep.lowValueAgeDays", type: "number" },
-  { id: "cfg-sleep-link-min", path: "sleep.linkMinSimilarity", type: "number" },
-  { id: "cfg-sleep-link-max", path: "sleep.linkMaxSimilarity", type: "number" },
+  { id: "cfg-sleep-link-min", path: "sleep.linkSimilarityMin", type: "number" },
+  { id: "cfg-sleep-link-max", path: "sleep.linkSimilarityMax", type: "number" },
   { id: "cfg-sleep-episodic-batch", path: "sleep.episodicBatchLimit", type: "number" },
   { id: "cfg-sleep-dedup-scan", path: "sleep.duplicateScanLimit", type: "number" },
   { id: "cfg-sleep-link-candidates", path: "sleep.linkCandidatesPerMemory", type: "number" },

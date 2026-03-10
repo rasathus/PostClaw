@@ -33,7 +33,7 @@ export function registerMemoryRoutes(router: Router): void {
     const sql = getSql();
     try {
       const embedding = await getEmbedding(q);
-      
+
       const rows = await sql.begin(async (tx: any) => {
         await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
@@ -88,9 +88,7 @@ export function registerMemoryRoutes(router: Router): void {
         : "";
 
       return await tx.unsafe(`
-        SELECT id, content, category, tier, volatility, access_scope,
-               access_count, usefulness_score, is_archived, is_pointer,
-               confidence, metadata, created_at, updated_at, expires_at
+        SELECT id, agent_id, access_scope, content, content_hash, category, source_uri, volatility, is_pointer, embedding, embedding_model, token_count, confidence, tier, usefulness_score, injection_count, access_count, last_injected_at, last_accessed_at, created_at, updated_at, expires_at, is_archived, metadata, superseded_by
         FROM memory_semantic
         WHERE ${whereClause} ${searchClause}
         ORDER BY created_at DESC
@@ -156,23 +154,46 @@ export function registerMemoryRoutes(router: Router): void {
         // Re-embed if content changed
         let embedding = current[0].embedding;
         let contentHash = current[0].content_hash;
-        if (data.content && data.content !== current[0].content) {
+        if (data.embedding !== undefined) {
+          embedding = typeof data.embedding === "string" ? data.embedding : JSON.stringify(data.embedding);
+        } else if (data.content && data.content !== current[0].content) {
           embedding = JSON.stringify(await getEmbedding(data.content));
+        }
+
+        if (data.content_hash !== undefined) {
+          contentHash = data.content_hash;
+        } else if (data.content && data.content !== current[0].content) {
           contentHash = hashContent(data.content);
         }
 
         return await tx`
           UPDATE memory_semantic SET
+            agent_id = ${data.agent_id ?? current[0].agent_id},
+            access_scope = ${data.access_scope ?? current[0].access_scope},
             content = ${data.content ?? current[0].content},
             content_hash = ${contentHash},
             category = ${data.category !== undefined ? data.category : current[0].category},
-            tier = ${data.tier ?? current[0].tier},
+            source_uri = ${data.source_uri !== undefined ? data.source_uri : current[0].source_uri},
             volatility = ${data.volatility ?? current[0].volatility},
+            is_pointer = ${data.is_pointer ?? current[0].is_pointer},
+            embedding = ${embedding},
+            embedding_model = ${data.embedding_model ?? current[0].embedding_model},
+            token_count = ${data.token_count ?? current[0].token_count},
+            confidence = ${data.confidence ?? current[0].confidence},
+            tier = ${data.tier ?? current[0].tier},
+            usefulness_score = ${data.usefulness_score ?? current[0].usefulness_score},
+            injection_count = ${data.injection_count ?? current[0].injection_count},
+            access_count = ${data.access_count ?? current[0].access_count},
+            last_injected_at = ${data.last_injected_at !== undefined ? data.last_injected_at : current[0].last_injected_at},
+            last_accessed_at = ${data.last_accessed_at !== undefined ? data.last_accessed_at : current[0].last_accessed_at},
+            created_at = ${data.created_at ?? current[0].created_at},
+            updated_at = ${data.updated_at ?? current[0].updated_at},
+            expires_at = ${data.expires_at !== undefined ? data.expires_at : current[0].expires_at},
             is_archived = ${data.is_archived ?? current[0].is_archived},
-            metadata = ${data.metadata ? JSON.stringify(data.metadata) : current[0].metadata},
-            embedding = ${embedding}
+            metadata = ${data.metadata !== undefined ? (data.metadata ? JSON.stringify(data.metadata) : null) : current[0].metadata},
+            superseded_by = ${data.superseded_by !== undefined ? data.superseded_by : current[0].superseded_by}
           WHERE id = ${ctx.params.id} AND agent_id = ${agentId}
-          RETURNING id, content, category, tier, is_archived
+          RETURNING *
         `;
       });
 
@@ -191,9 +212,7 @@ export function registerMemoryRoutes(router: Router): void {
     const rows = await sql.begin(async (tx: any) => {
       await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
       return await tx`
-        SELECT id, content, category, tier, access_scope,
-               access_count, usefulness_score, is_archived, is_pointer,
-               confidence, metadata, created_at, updated_at, expires_at
+        SELECT id, agent_id, access_scope, content, content_hash, category, source_uri, volatility, is_pointer, embedding, embedding_model, token_count, confidence, tier, usefulness_score, injection_count, access_count, last_injected_at, last_accessed_at, created_at, updated_at, expires_at, is_archived, metadata, superseded_by
         FROM memory_semantic
         WHERE id = ${ctx.params.id} AND agent_id = ${agentId}
       `;

@@ -41,9 +41,9 @@ export async function ensureAgent(agentId: string, workspaceDir?: string): Promi
  * Returns formatted context string or null if no results found.
  */
 export async function searchPostgres(
-  agentId: string, 
-  userText: string, 
-  options: { semanticLimit?: number; linkedSimilarity?: number; totalLimit?: number; maxTraversalDepth?: number } = {}
+  agentId: string,
+  userText: string,
+  options: { semanticLimit?: number; linkedSimilarity?: number; totalLimit?: number; maxTraversalDepth?: number; trackAs?: "access" | "injection" } = {}
 ): Promise<string | null> {
   let contextString: string | null = null;
   const semanticLimit = options.semanticLimit ?? 7;
@@ -122,12 +122,21 @@ export async function searchPostgres(
 
         // Update tracking columns
         const extractedIds = (results as SearchResultRow[]).map((r) => r.id);
-        await tx`
-          UPDATE memory_semantic
-          SET access_count = access_count + 1,
-              last_accessed_at = CURRENT_TIMESTAMP
-          WHERE id IN ${getSql()(extractedIds)}
-        `;
+        if (options.trackAs === "injection") {
+          await tx`
+            UPDATE memory_semantic
+            SET injection_count = injection_count + 1,
+                last_injected_at = CURRENT_TIMESTAMP
+            WHERE id IN ${getSql()(extractedIds)}
+          `;
+        } else {
+          await tx`
+            UPDATE memory_semantic
+            SET access_count = access_count + 1,
+                last_accessed_at = CURRENT_TIMESTAMP
+            WHERE id IN ${getSql()(extractedIds)}
+          `;
+        }
       }
     });
   } catch (err) {
@@ -220,7 +229,7 @@ export async function logEpisodicToolCall(agentId: string,
  * Fetch persona rules (core + situational) from agent_persona.
  */
 export async function fetchPersonaContext(
-  agentId: string, 
+  agentId: string,
   embedding: number[] | null,
   options: { situationalLimit?: number } = {}
 ): Promise<string | null> {
@@ -293,6 +302,7 @@ export async function storeMemory(agentId: string,
 
     const embedding = await getEmbedding(validated.content);
     const contentHash = hashContent(validated.content);
+    const tokenCountEstimate = Math.ceil(validated.content.length / 4);
 
     const result = await getSql().begin(async (tx: any) => {
       await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
@@ -300,13 +310,16 @@ export async function storeMemory(agentId: string,
       const rows = await tx`
         INSERT INTO memory_semantic (
           agent_id, access_scope, content, content_hash, embedding, embedding_model,
-          category, source_uri, volatility, is_pointer, token_count, confidence, tier, usefulness_score, expires_at, metadata
+          category, source_uri, volatility, is_pointer, token_count, confidence, tier, usefulness_score,
+          injection_count, access_count, last_injected_at, last_accessed_at, expires_at, created_at, updated_at,
+          is_archived, metadata, superseded_by
         ) VALUES (
           ${agentId}, ${scope}, ${content}, ${contentHash},
-          ${JSON.stringify(embedding)}, ${EMBEDDING_MODEL},
-          ${validated.options?.category || null}, ${validated.options?.source_uri || null}, ${validated.options?.volatility || 'low'}, ${validated.options?.is_pointer || false},
-          ${validated.options?.token_count || 0}, ${validated.options?.confidence || 0.5}, ${validated.options?.tier || 'daily'}, ${validated.options?.usefulness_score || 0.0},
-          ${validated.options?.expires_at || null}, ${validated.options?.metadata ? JSON.stringify(validated.options.metadata) : '{}'}
+          ${JSON.stringify(embedding)}, ${validated.options?.embedding_model || EMBEDDING_MODEL},
+          ${validated.options?.category || null}, ${validated.options?.source_uri || null}, ${validated.options?.volatility || 'low'}, ${validated.options?.is_pointer ?? false},
+          ${tokenCountEstimate}, ${validated.options?.confidence ?? 0.5}, ${validated.options?.tier || 'daily'}, ${validated.options?.usefulness_score ?? 0.0},
+          ${validated.options?.injection_count ?? 0}, ${validated.options?.access_count ?? 0}, ${validated.options?.last_injected_at || null}, ${validated.options?.last_accessed_at || null}, ${validated.options?.expires_at || null}, ${validated.options?.created_at || new Date()}, ${validated.options?.updated_at || new Date()},
+          ${validated.options?.is_archived ?? false}, ${validated.options?.metadata ? JSON.stringify(validated.options.metadata) : '{}'}, ${validated.options?.superseded_by || null}
         )
         ON CONFLICT (agent_id, content_hash) DO NOTHING
         RETURNING id;
@@ -342,13 +355,15 @@ export async function storeMemory(agentId: string,
 export async function updateMemory(agentId: string,
   oldMemoryId: string,
   newFact: string,
+  scope: "private" | "shared" | "global" = "private",
   options: MemoryOptions = {}
 ): Promise<{ newId: string | null; status: string }> {
   try {
-    const validated = UpdateMemoryInputSchema.parse({ oldMemoryId, newFact, options: Object.keys(options).length > 0 ? options : undefined });
+    const validated = UpdateMemoryInputSchema.parse({ oldMemoryId, newFact, scope, options: Object.keys(options).length > 0 ? options : undefined });
 
     const embedding = await getEmbedding(validated.newFact);
     const contentHash = hashContent(validated.newFact);
+    const tokenCountEstimate = Math.ceil(validated.newFact.length / 4);
 
     const result = await getSql().begin(async (tx: any) => {
       await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
@@ -357,13 +372,16 @@ export async function updateMemory(agentId: string,
       const newMem = await tx`
         INSERT INTO memory_semantic (
           agent_id, access_scope, content, content_hash, embedding, embedding_model,
-          category, source_uri, volatility, is_pointer, token_count, confidence, tier, usefulness_score, expires_at, metadata
+          category, source_uri, volatility, is_pointer, token_count, confidence, tier, usefulness_score,
+          injection_count, access_count, last_injected_at, last_accessed_at, expires_at, created_at, updated_at,
+          is_archived, metadata, superseded_by
         ) VALUES (
-          ${agentId}, 'global', ${validated.newFact}, ${contentHash},
-          ${JSON.stringify(embedding)}, ${EMBEDDING_MODEL},
-          ${validated.options?.category || null}, ${validated.options?.source_uri || null}, ${validated.options?.volatility || 'low'}, ${validated.options?.is_pointer || false},
-          ${validated.options?.token_count || 0}, ${validated.options?.confidence || 0.5}, ${validated.options?.tier || 'daily'}, ${validated.options?.usefulness_score || 0.0},
-          ${validated.options?.expires_at || null}, ${validated.options?.metadata ? JSON.stringify(validated.options.metadata) : '{}'}
+          ${agentId}, ${scope}, ${validated.newFact}, ${contentHash},
+          ${JSON.stringify(embedding)}, ${validated.options?.embedding_model || EMBEDDING_MODEL},
+          ${validated.options?.category || null}, ${validated.options?.source_uri || null}, ${validated.options?.volatility || 'low'}, ${validated.options?.is_pointer ?? false},
+          ${tokenCountEstimate}, ${validated.options?.confidence ?? 0.5}, ${validated.options?.tier || 'daily'}, ${validated.options?.usefulness_score ?? 0.0},
+          ${validated.options?.injection_count ?? 0}, ${validated.options?.access_count ?? 0}, ${validated.options?.last_injected_at || null}, ${validated.options?.last_accessed_at || null}, ${validated.options?.expires_at || null}, ${validated.options?.created_at || new Date()}, ${validated.options?.updated_at || new Date()},
+          ${validated.options?.is_archived ?? false}, ${validated.options?.metadata ? JSON.stringify(validated.options.metadata) : '{}'}, ${validated.options?.superseded_by || null}
         )
         RETURNING id;
       `;
@@ -405,7 +423,7 @@ export async function linkMemories(agentId: string,
 ): Promise<{ status: string }> {
   try {
     const isUuid = (uuid: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid);
-    
+
     if (!isUuid(sourceId) || !isUuid(targetId)) {
       console.warn(`[GRAPH] Invalid UUID provided for link: ${sourceId} -> ${targetId}`);
       return { status: "error: invalid UUID format" };
@@ -429,10 +447,10 @@ export async function linkMemories(agentId: string,
       const targetCol = tgtMem.length > 0 ? 'target_memory_id' : (tgtPer.length > 0 ? 'target_persona_id' : null);
 
       if (!sourceCol) {
-         throw new Error(`Source ID ${sourceId} not found in memories or personas.`);
+        throw new Error(`Source ID ${sourceId} not found in memories or personas.`);
       }
       if (!targetCol) {
-         throw new Error(`Target ID ${targetId} not found in memories or personas.`);
+        throw new Error(`Target ID ${targetId} not found in memories or personas.`);
       }
 
       // Check if edge already exists (since ON CONFLICT only fully covers source_memory_id + target_memory_id)
