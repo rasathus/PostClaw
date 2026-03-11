@@ -546,9 +546,12 @@ Do not use markdown formatting.
 
     let classifications: LinkClassification[];
     try {
-      classifications = z.array(LinkClassificationSchema).parse(JSON.parse(jsonString));
-    } catch {
-      console.error(`[PHASE 4] Failed to parse LLM response for batch ${Math.floor(i / options.batchSize) + 1}. Skipping.`);
+      const cleanString = extractJsonFromLlmOutput(jsonString);
+      classifications = z.array(LinkClassificationSchema).parse(JSON.parse(cleanString));
+    } catch (err: any) {
+      console.error(`\n[PHASE 4] ⚠️ Parsing skipped for batch ${Math.floor(i / options.batchSize) + 1}.`);
+      console.error(`[PHASE 4] LLM response could not be parsed as a valid JSON array of relationships.`);
+      console.error(`[PHASE 4] Raw LLM Output:\n${jsonString}\n`);
       continue;
     }
 
