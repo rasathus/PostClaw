@@ -168,19 +168,40 @@ Do not use markdown formatting.
       })
       .join("\n");
 
+    const prompt = `${systemPrompt}\n\nHere is the recent episodic transcript to analyze:\n\n${transcript}`;
+
     let jsonString = "";
     try {
-      jsonString = await callLLMviaAgent(`${systemPrompt}\n\nHere is the recent episodic transcript to analyze:\n\n${transcript}`, agentId);
+      jsonString = await callLLMviaAgent(prompt, agentId);
     } catch (err: any) {
-      if (err.message && err.message.includes('E2BIG') && chunk.length > 1) {
-        console.warn(`[PHASE 1] ⚠️ E2BIG error (chunk size: ${chunk.length}). Halving chunk and retrying...`);
-        const mid = Math.floor(chunk.length / 2);
-        const res1 = await processChunk(chunk.slice(0, mid));
-        const res2 = await processChunk(chunk.slice(mid));
-        return {
-          session_summary: (res1.session_summary || "") + (res2.session_summary ? " " + res2.session_summary : ""),
-          extracted_durable_facts: [...res1.extracted_durable_facts, ...res2.extracted_durable_facts]
-        };
+      if (err.message && err.message.includes('E2BIG')) {
+        if (chunk.length > 1) {
+          console.warn(`[PHASE 1] ⚠️ E2BIG error (chunk size: ${chunk.length}). Halving chunk and retrying...`);
+          const mid = Math.floor(chunk.length / 2);
+          const res1 = await processChunk(chunk.slice(0, mid));
+          const res2 = await processChunk(chunk.slice(mid));
+          return {
+            session_summary: (res1.session_summary || "") + (res2.session_summary ? " " + res2.session_summary : ""),
+            extracted_durable_facts: [...res1.extracted_durable_facts, ...res2.extracted_durable_facts]
+          };
+        } else {
+          console.warn(`[PHASE 1] ⚠️ E2BIG error on a SINGLE record. Halving the text content itself...`);
+          const row = chunk[0] as EpisodicRow;
+          const text = row.event_summary || "";
+          if (text.length < 100) {
+            console.error(`[PHASE 1] Text content too short to halve further, failing...`);
+            throw err;
+          }
+          const mid = Math.floor(text.length / 2);
+          const row1 = { ...row, event_summary: text.slice(0, mid) + " [CONTINUED]" };
+          const row2 = { ...row, event_summary: "[CONTINUED] " + text.slice(mid) };
+          const res1 = await processChunk([row1]);
+          const res2 = await processChunk([row2]);
+          return {
+            session_summary: (res1.session_summary || "") + (res2.session_summary ? " " + res2.session_summary : ""),
+            extracted_durable_facts: [...res1.extracted_durable_facts, ...res2.extracted_durable_facts]
+          };
+        }
       }
       throw err;
     }
@@ -558,16 +579,49 @@ Do not use markdown formatting.
       .map((p, idx) => `${idx + 1}. [A: ${p.source_type}/${p.source_id}] "${p.source_content}"\n   [B: ${p.target_type}/${p.target_id}] "${p.target_content}" (similarity: ${(p.similarity * 100).toFixed(1)}%)`)
       .join("\n\n");
 
+    const prompt = `${linkSystemPrompt}\n\nClassify the relationships between these pairs:\n\n${pairsDescription}`;
+
     let jsonString = "";
     try {
-      jsonString = await callLLMviaAgent(`${linkSystemPrompt}\n\nClassify the relationships between these pairs:\n\n${pairsDescription}`, agentId);
+      jsonString = await callLLMviaAgent(prompt, agentId);
     } catch (err: any) {
-      if (err.message && err.message.includes('E2BIG') && batch.length > 1) {
-        console.warn(`[PHASE 4] ⚠️ E2BIG error (batch size: ${batch.length}). Halving batch and retrying...`);
-        const mid = Math.floor(batch.length / 2);
-        const res1 = await processBatch(batch.slice(0, mid), batchIndexHuman);
-        const res2 = await processBatch(batch.slice(mid), batchIndexHuman);
-        return [...res1, ...res2];
+      if (err.message && err.message.includes('E2BIG')) {
+        if (batch.length > 1) {
+          console.warn(`[PHASE 4] ⚠️ E2BIG error (batch size: ${batch.length}). Halving batch and retrying...`);
+          const mid = Math.floor(batch.length / 2);
+          const res1 = await processBatch(batch.slice(0, mid), batchIndexHuman);
+          const res2 = await processBatch(batch.slice(mid), batchIndexHuman);
+          return [...res1, ...res2];
+        } else {
+          console.warn(`[PHASE 4] ⚠️ E2BIG error on a SINGLE pair. Text content is too large. Halving text to prevent crash...`);
+          const p = batch[0] as CandidatePair;
+          const sc = p.source_content || "";
+          const tc = p.target_content || "";
+          
+          if (sc.length < 100 && tc.length < 100) {
+            console.error(`[PHASE 4] Text content too short to halve further, failing...`);
+            throw err;
+          }
+
+          const scMid = Math.floor(sc.length / 2);
+          const tcMid = Math.floor(tc.length / 2);
+          const p1 = { ...p, source_content: sc.slice(0, scMid) + " [CONTINUED]", target_content: tc.slice(0, tcMid) + " [CONTINUED]" };
+          const p2 = { ...p, source_content: "[CONTINUED] " + sc.slice(scMid), target_content: "[CONTINUED] " + tc.slice(tcMid) };
+          
+          const res1 = await processBatch([p1], batchIndexHuman);
+          const res2 = await processBatch([p2], batchIndexHuman);
+          
+          // Deduplicate the arrays by source_id+target_id mapping
+          const combined = [...res1, ...res2];
+          const uniqueDict: Record<string, LinkClassification> = {};
+          for (const item of combined) {
+             const key = `${item.source_id}:${item.target_id}`;
+             if (!uniqueDict[key] || uniqueDict[key].relationship === 'none') {
+                 uniqueDict[key] = item;
+             }
+          }
+          return Object.values(uniqueDict);
+        }
       }
       throw err;
     }
