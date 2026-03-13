@@ -577,20 +577,14 @@ Output EXCLUSIVELY a JSON array (no markdown, no explanation) with one object pe
       for (const item of classifications) {
         const pair = candidatePairs[item.pair_index];
         if (!pair) continue;
-        const rel = validRelationships.has(item.relationship) ? item.relationship : "related_to";
+        if (!validRelationships.has(item.relationship)) continue;
+        const rel = item.relationship;
         pairRelationships.set([pair.source_id, pair.target_id].join(":"), rel);
       }
     } catch (err: any) {
-      console.warn(`[PHASE 4] ⚠️ LLM classification failed: ${err.message}. Falling back to related_to for all pairs.`);
+      console.warn(`[PHASE 4] ⚠️ LLM classification failed: ${err.message}. No links will be created this cycle.`);
     }
-
-    // Any pair not classified by LLM gets "related_to" as a safe default.
-    for (const pair of candidatePairs) {
-      const key = [pair.source_id, pair.target_id].join(":");
-      if (!pairRelationships.has(key)) {
-        pairRelationships.set(key, "related_to");
-      }
-    }
+    // Pairs not returned by the LLM are simply not linked — no fallback.
   }
 
   let linksCreated = 0;
@@ -599,7 +593,8 @@ Output EXCLUSIVELY a JSON array (no markdown, no explanation) with one object pe
     await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
     for (const pair of candidatePairs) {
-      const relationship = pairRelationships.get([pair.source_id, pair.target_id].join(":")) ?? "related_to";
+      const relationship = pairRelationships.get([pair.source_id, pair.target_id].join(":"));
+      if (!relationship) continue;
 
       if (relationship === "none") continue;
 
