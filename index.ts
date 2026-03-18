@@ -78,6 +78,13 @@ const openclawPostgresPlugin = {
   description: "PostgreSQL-backed RAG, memory, and persona management",
 
   register(api: any) {
+    // In ACP mode openclaw uses stdout as a JSON protocol channel.
+    // Redirect console.log → console.error so PostClaw startup logs don't
+    // corrupt the ACP stream. stderr is captured separately by the ACP client.
+    if (process.argv.includes("acp")) {
+      console.log = console.error;
+    }
+
     // -------------------------------------------------------------------------
     // CLI — Register `openclaw postclaw` subcommands
     //
@@ -796,7 +803,7 @@ Changing content will re-embed the persona for situational matching. Categories 
     // otherwise hang due to the setInterval keeping the event loop alive.
     // ─────────────────────────────────────────────────────────────────────────
     const _isOneShotCommand = process.argv.some(a =>
-      ['agent', 'setup', 'persona', 'sleep', 'dashboard', 'restart', 'stop', 'status', 'logs'].includes(a)
+      ['acp', 'agent', 'setup', 'persona', 'sleep', 'dashboard', 'restart', 'stop', 'status', 'logs'].includes(a)
     );
 
     const sleepIntervalHours = api.config?.plugins?.entries?.postclaw?.config?.sleepIntervalHours;
