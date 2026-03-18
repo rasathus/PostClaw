@@ -31,7 +31,7 @@ export type { ChatMessage, ContentPart, ToolCallRecord } from "./schemas/validat
 // =============================================================================
 
 const processedEvents = new Set<string>();
-let _registered = false;
+let _gatewayRegistered = false;
 
 import { getCurrentConfig, loadConfig } from "./services/config.js";
 
@@ -79,11 +79,6 @@ const openclawPostgresPlugin = {
   description: "PostgreSQL-backed RAG, memory, and persona management",
 
   register(api: any) {
-    if (_registered) {
-      return;
-    }
-    _registered = true;
-
     // Detect when invoked as a one-shot CLI subcommand (e.g. `openclaw postclaw sleep`).
     // In that case we only need the CLI command registrations below — hooks, tools,
     // and background services are gateway-only and produce unwanted noise in CLI runs.
@@ -211,6 +206,13 @@ const openclawPostgresPlugin = {
     if (_isCliMode) {
       return;
     }
+
+    // Guard against double registration when openclaw loads the plugin in
+    // multiple subsystem contexts within the same Node.js module cache.
+    if (_gatewayRegistered) {
+      return;
+    }
+    _gatewayRegistered = true;
 
     console.log("[PostClaw] Registering plugin hooks...");
 
