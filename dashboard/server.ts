@@ -7,6 +7,7 @@
 
 import { createServer, Server } from "node:http";
 import { join, dirname } from "node:path";
+import { randomBytes } from "node:crypto";
 import { Router } from "./router.js";
 import { serveStatic, sendError } from "./helpers.js";
 import { registerPersonaRoutes } from "./routes/personas.js";
@@ -32,6 +33,10 @@ export interface DashboardOptions {
   port?: number;
   bindAddress?: string;
   workspaceDir?: string;
+  /** Bearer token required on all /api/* requests. Auto-generated if omitted. */
+  dashboardToken?: string;
+  /** Agent IDs that callers are permitted to query. All others return 403. */
+  allowedAgentIds?: string[];
 }
 
 export function startDashboard(opts: DashboardOptions = {}): void {
@@ -43,10 +48,20 @@ export function startDashboard(opts: DashboardOptions = {}): void {
   const port = opts.port || DEFAULT_PORT;
   const bind = opts.bindAddress || DEFAULT_BIND;
 
-  // Security warning for non-localhost binds
+  // Resolve or auto-generate the bearer token
+  const token = opts.dashboardToken || randomBytes(24).toString("hex");
+  if (!opts.dashboardToken) {
+    console.log(`[Dashboard] ⚠️  No dashboardToken configured — auto-generated token for this session:`);
+    console.log(`[Dashboard]    Bearer ${token}`);
+    console.log(`[Dashboard]    Set pluginConfig.dashboardToken to make this permanent.`);
+  }
+
+  // Build allowlist (lowercase for case-insensitive comparison)
+  const allowedIds = opts.allowedAgentIds?.map((id) => id.toLowerCase());
+
   if (bind !== "127.0.0.1" && bind !== "localhost") {
     console.warn(`[Dashboard] ⚠️  WARNING: Binding to ${bind} exposes the dashboard to the network!`);
-    console.warn(`[Dashboard] ⚠️  The dashboard has NO authentication. Only bind to 0.0.0.0 on trusted networks.`);
+    console.warn(`[Dashboard] ⚠️  Ensure dashboardToken is set and kept secret.`);
   }
 
   const router = new Router();
@@ -68,8 +83,38 @@ export function startDashboard(opts: DashboardOptions = {}): void {
     const url = req.url || "/";
     const pathname = url.split("?")[0];
 
-    // API routes
+    // Security headers on every response
+    res.setHeader("Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+
+    // API routes — require authentication and agentId validation
     if (pathname.startsWith("/api/")) {
+      // -----------------------------------------------------------------------
+      // HIGH-03: Bearer token authentication
+      // -----------------------------------------------------------------------
+      const authHeader = req.headers["authorization"] || "";
+      const presented = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      if (presented !== token) {
+        sendError(res, 401, "Unauthorised — provide a valid Bearer token");
+        return;
+      }
+
+      // -----------------------------------------------------------------------
+      // HIGH-02: agentId allowlist validation
+      // -----------------------------------------------------------------------
+      if (allowedIds && allowedIds.length > 0) {
+        const qIndex = url.indexOf("?");
+        const agentId = qIndex !== -1
+          ? new URLSearchParams(url.substring(qIndex + 1)).get("agentId") ?? "main"
+          : "main";
+        if (!allowedIds.includes(agentId.toLowerCase())) {
+          sendError(res, 403, `agentId '${agentId}' is not permitted`);
+          return;
+        }
+      }
+
       const handled = await router.handle(req, res);
       if (!handled) sendError(res, 404, "Not found");
       return;
@@ -93,7 +138,7 @@ export function startDashboard(opts: DashboardOptions = {}): void {
   });
 
   _server.listen(port, bind, () => {
-    console.log(`[Dashboard] 🖥️  Dashboard running at http://${bind}:${port}`);
+    console.log(`[Dashboard] Dashboard running at http://${bind}:${port}`);
   });
 
   _server.on("error", (err) => {

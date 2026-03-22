@@ -195,9 +195,13 @@ const openclawPostgresPlugin = {
             setEmbeddingConfig(llmUrl, embModel);
 
             const { startDashboard } = await import("./dashboard/server.js");
+            const agentIds = (api.config?.agents?.list as Array<{ id: string }> | undefined)
+              ?.map((a) => a.id) ?? [];
             startDashboard({
               port: opts.port ? parseInt(opts.port, 10) : undefined,
               bindAddress: opts.bind,
+              dashboardToken: pluginCfg?.dashboardToken,
+              allowedAgentIds: agentIds,
             });
             console.log("[PostClaw] Dashboard running. Press Ctrl+C to stop.");
           });
@@ -845,10 +849,14 @@ Changing content will re-embed the persona for situational matching. Categories 
     // ─────────────────────────────────────────────────────────────────────────
     const dashboardEnabled = pluginConfig?.dashboardEnabled;
     if (dashboardEnabled) {
+      const agentIds = (api.config?.agents?.list as Array<{ id: string }> | undefined)
+        ?.map((a) => a.id) ?? [];
       import("./dashboard/server.js").then(({ startDashboard }) => {
         startDashboard({
           port: pluginConfig?.dashboardPort,
           bindAddress: pluginConfig?.dashboardBindAddress,
+          dashboardToken: pluginConfig?.dashboardToken,
+          allowedAgentIds: agentIds,
         });
       }).catch((err) => {
         console.error("[PostClaw] Failed to start dashboard:", err);
