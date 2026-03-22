@@ -75,25 +75,25 @@ export function registerMemoryRoutes(router: Router): void {
     const rows = await sql.begin(async (tx: any) => {
       await tx`SELECT set_config('app.current_agent_id', ${q.agentId}, true)`;
 
-      // Build dynamic WHERE clauses
-      const conditions: string[] = [`agent_id = '${q.agentId}'`];
-      if (q.archived === "false") conditions.push("is_archived = false");
-      else if (q.archived === "true") conditions.push("is_archived = true");
-      if (q.category) conditions.push(`category = '${q.category}'`);
-      if (q.tier) conditions.push(`tier = '${q.tier}'`);
+      // Build dynamic WHERE clauses using parameterised template fragments — no unsafe() or string interpolation
+      const archivedCondition =
+        q.archived === "false" ? tx`AND is_archived = false` :
+        q.archived === "true"  ? tx`AND is_archived = true`  : tx``;
+      const categoryCondition = q.category ? tx`AND category    = ${q.category}` : tx``;
+      const tierCondition     = q.tier     ? tx`AND tier        = ${q.tier}`     : tx``;
+      const searchCondition   = q.search   ? tx`AND content ILIKE ${'%' + q.search + '%'}` : tx``;
 
-      const whereClause = conditions.join(" AND ");
-      const searchClause = q.search
-        ? `AND content ILIKE '%${q.search.replace(/'/g, "''")}%'`
-        : "";
-
-      return await tx.unsafe(`
+      return await tx`
         SELECT id, agent_id, access_scope, content, content_hash, category, source_uri, volatility, is_pointer, embedding, embedding_model, token_count, confidence, tier, usefulness_score, injection_count, access_count, last_injected_at, last_accessed_at, created_at, updated_at, expires_at, is_archived, metadata, superseded_by
         FROM memory_semantic
-        WHERE ${whereClause} ${searchClause}
+        WHERE agent_id = ${q.agentId}
+        ${archivedCondition}
+        ${categoryCondition}
+        ${tierCondition}
+        ${searchCondition}
         ORDER BY created_at DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
-      `);
+      `;
     });
 
     // Also get total count
