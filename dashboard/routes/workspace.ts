@@ -12,8 +12,11 @@ import { parseBody, sendJson, sendError } from "../helpers.js";
 import { getSql, getEmbedding } from "../../services/db.js";
 import { ensureAgent, storeMemory } from "../../services/memoryService.js";
 import { callLLMviaAgent } from "../../services/llm.js";
-import { readdir, readFile, realpath } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, extname, resolve, sep } from "node:path";
+
+/** Maximum file size accepted by the workspace import endpoint (512 KB). */
+const MAX_IMPORT_FILE_BYTES = 512 * 1024;
 import { z } from "zod";
 /**
  * Resolves `filename` relative to `workspaceDir`, then verifies via
@@ -123,6 +126,11 @@ export function registerWorkspaceRoutes(router: Router): void {
 
       const safePath = await safeResolvePath(workspaceDir, data.filename).catch(() => null);
       if (!safePath) return sendError(res, 400, "Only .md files allowed, no path traversal");
+
+      const fileStats = await stat(safePath);
+      if (fileStats.size > MAX_IMPORT_FILE_BYTES) {
+        return sendError(res, 413, `File too large (${fileStats.size} bytes). Maximum allowed: ${MAX_IMPORT_FILE_BYTES} bytes`);
+      }
 
       const markdownText = await readFile(safePath, "utf-8");
       await ensureAgent(agentId);
