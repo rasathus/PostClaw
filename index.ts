@@ -217,8 +217,29 @@ const openclawPostgresPlugin = {
     // Apply database URL from plugin config (plugins.entries.postclaw.config.dbUrl)
     const pluginConfig = api.config?.plugins?.entries?.postclaw?.config;
     const debugLogging = pluginConfig?.debugLogging === true;
+
+    /** Keys whose values are always redacted from debug output. */
+    const REDACTED_KEYS = new Set([
+      "sessionId", "sessionKey", "workspaceDir", "content", "prompt",
+      "messages", "dbUrl", "apiKey", "token", "authorization",
+    ]);
+
+    function redactForLog(value: unknown, depth = 0): unknown {
+      if (depth > 6 || value === null || typeof value !== "object") return value;
+      if (Array.isArray(value)) return value.map((v) => redactForLog(v, depth + 1));
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = REDACTED_KEYS.has(k) ? "[REDACTED]" : redactForLog(v, depth + 1);
+      }
+      return out;
+    }
+
     const debugLog = (...args: any[]) => {
-      if (debugLogging) console.log("[PostClaw DEBUG]", ...args);
+      if (!debugLogging) return;
+      const safe = args.map((a) =>
+        typeof a === "string" ? a : JSON.stringify(redactForLog(a), null, 2)
+      );
+      console.log("[PostClaw DEBUG]", ...safe);
     };
 
     if (pluginConfig?.dbUrl) {
@@ -267,8 +288,8 @@ const openclawPostgresPlugin = {
       "before_prompt_build",
       async (event: PromptBuildEvent, ctx: PromptBuildCtx) => {
         try {
-          debugLog("before_prompt_build event:", JSON.stringify(event, null, 2));
-          debugLog("before_prompt_build ctx:", JSON.stringify(ctx, null, 2));
+          debugLog("before_prompt_build event:", event);
+          debugLog("before_prompt_build ctx:", ctx);
 
           const messages: ChatMessage[] = event.messages ?? [];
           const userText = lastReceivedMessage || extractUserText(messages);
@@ -455,8 +476,8 @@ Auto-managed columns (do not set): access_count, injection_count, is_pointer, co
           metadata: Type.Optional(Type.Any({ description: "JSON object of additional context (e.g. {source: 'user_stated', topic: 'birthday', related_to: 'family'}). Stored as JSONB for flexible querying." }))
         }),
         async execute(_toolCallId: string, args: MemoryStoreArgs, _signal: unknown, _onUpdate: unknown, ctx?: any) {
-          debugLog("memory_store args:", JSON.stringify(args, null, 2));
-          debugLog("memory_store ctx (from execute params):", JSON.stringify(ctx, null, 2));
+          debugLog("memory_store args:", args);
+          debugLog("memory_store ctx (from execute params):", ctx);
           const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
           debugLog("memory_store mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
@@ -512,7 +533,7 @@ Use this instead of memory_store when you know the UUID of the outdated fact.`,
           metadata: Type.Optional(Type.Any({ description: "JSON metadata for the new memory. Does NOT carry over from old memory." }))
         }),
         async execute(_toolCallId: string, args: MemoryUpdateArgs, _signal: unknown, _onUpdate: unknown, ctx?: any) {
-          debugLog("memory_update args:", JSON.stringify(args, null, 2));
+          debugLog("memory_update args:", args);
           const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
           debugLog("memory_update mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
@@ -539,7 +560,7 @@ The edge weight defaults to 1.0. Edges are also auto-discovered during the sleep
           relationship: Type.String({ description: "Relationship type: 'related_to', 'elaborates', 'contradicts', 'depends_on', 'part_of', 'defines', or 'supports'" }),
         }),
         async execute(_toolCallId: string, args: { source_id: string; target_id: string; relationship: string }, _signal: unknown, _onUpdate: unknown, ctx?: any) {
-          debugLog("memory_link args:", JSON.stringify(args, null, 2));
+          debugLog("memory_link args:", args);
           const agentId = toolCallIdToAgentId.get(_toolCallId) || ctx?.agentId || "main";
           debugLog("memory_link mapped agentId:", agentId);
           await ensureAgent(agentId, ctx?.workspaceDir);
@@ -681,8 +702,8 @@ Changing content will re-embed the persona for situational matching. Categories 
     const toolCallIdToAgentId = new Map<string, string>();
 
     api.on("before_tool_call", async (event: any, ctx: any) => {
-      debugLog("before_tool_call event:", JSON.stringify(event, null, 2));
-      debugLog("before_tool_call ctx:", JSON.stringify(ctx, null, 2));
+      debugLog("before_tool_call event:", event);
+      debugLog("before_tool_call ctx:", ctx);
       const agentId = ctx?.agentId;
       if (agentId && event.toolCallId) {
         toolCallIdToAgentId.set(event.toolCallId, agentId);
@@ -693,8 +714,8 @@ Changing content will re-embed the persona for situational matching. Categories 
       "agent_end",
       async (event: AgentEndEvent, ctx: AgentEndCtx) => {
         try {
-          debugLog("agent_end event:", JSON.stringify(event, null, 2));
-          debugLog("agent_end ctx:", JSON.stringify(ctx, null, 2));
+          debugLog("agent_end event:", event);
+          debugLog("agent_end ctx:", ctx);
 
           const messages: ChatMessage[] = event.messages ?? [];
           const agentId = ctx.agentId;
