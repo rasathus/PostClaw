@@ -56,12 +56,76 @@ const DEFAULT_LINK_SCAN_LIMIT = 50;
 const DEFAULT_INTERVAL_HOURS = 6;
 
 // =============================================================================
+// SECURITY HELPERS
+// =============================================================================
+
+/**
+ * Maximum length for a single episodic event summary before truncation.
+ * Limits the blast radius of a crafted oversized memory entry.
+ */
+const MAX_EPISODIC_SUMMARY_CHARS = 800;
+
+/**
+ * Maximum character length for a single extracted durable fact.
+ * Rejects implausibly long LLM-generated "facts".
+ */
+const MAX_FACT_CHARS = 500;
+
+/**
+ * Patterns that look like prompt injection attempts.
+ * Matched case-insensitively against extracted facts before DB writes.
+ */
+const INJECTION_PATTERNS = [
+  /\bignore\s+(all\s+)?(previous|prior|above)\b/i,
+  /\bsystem\s*(prompt|override|instruction)\b/i,
+  /\bforget\s+(everything|all)\b/i,
+  /\byou\s+are\s+now\b/i,
+  /\bnew\s+instructions?\b/i,
+  /\bdisregard\b/i,
+  /\bjailbreak\b/i,
+];
+
+/**
+ * Sanitises a single piece of episodic content before embedding it in an
+ * LLM prompt. Strips null bytes and control characters, then truncates.
+ * Does NOT strip other content — the delimiter approach in the prompt handles
+ * instruction/data separation.
+ */
+function sanitizeEpisodicContent(text: string): string {
+  // Strip null bytes and ASCII control characters (except tab/newline/CR)
+  // eslint-disable-next-line no-control-regex
+  const cleaned = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ").trim();
+  if (cleaned.length <= MAX_EPISODIC_SUMMARY_CHARS) return cleaned;
+  return cleaned.slice(0, MAX_EPISODIC_SUMMARY_CHARS) + " [TRUNCATED]";
+}
+
+/**
+ * Returns true if an LLM-extracted fact is safe to write to the DB.
+ * Rejects empty strings, overlong strings, and strings matching known
+ * prompt-injection patterns.
+ */
+function isFactSafe(fact: string): boolean {
+  if (!fact || fact.trim().length === 0) return false;
+  if (fact.length > MAX_FACT_CHARS) {
+    console.warn(`[PHASE 1] ⚠️  Rejected oversized extracted fact (${fact.length} chars > ${MAX_FACT_CHARS} limit)`);
+    return false;
+  }
+  for (const pattern of INJECTION_PATTERNS) {
+    if (pattern.test(fact)) {
+      console.warn(`[PHASE 1] ⚠️  Rejected fact matching injection pattern (${pattern}): "${fact.substring(0, 80)}..."`);
+      return false;
+    }
+  }
+  return true;
+}
+
+// =============================================================================
 // TYPES
 // =============================================================================
 
 /**
  * Defensively extracts a JSON object from raw LLM output.
- * Handles markdown fences (```json ... ```) or conversational filler 
+ * Handles markdown fences (```json ... ```) or conversational filler
  * wrapping the actual { ... } block.
  */
 function extractJsonFromLlmOutput(text: string): string {
@@ -176,7 +240,7 @@ Do not use markdown formatting.
     const transcript = chunk
       .map((e: Record<string, unknown>) => {
         const row = e as EpisodicRow;
-        return `[${row.created_at}] [${row.event_type.toUpperCase()}]: ${row.event_summary}`;
+        return `[${row.created_at}] [${row.event_type.toUpperCase()}]: ${sanitizeEpisodicContent(row.event_summary)}`;
       })
       .join("\n");
 
@@ -241,6 +305,8 @@ Do not use markdown formatting.
     await tx`SELECT set_config('app.current_agent_id', ${agentId}, true)`;
 
     for (const fact of result.extracted_durable_facts) {
+      if (!isFactSafe(fact)) continue;
+
       const embedding = await getEmbedding(fact);
       const encoder = new TextEncoder();
       const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(fact));
@@ -250,7 +316,7 @@ Do not use markdown formatting.
         INSERT INTO memory_semantic (
           agent_id, access_scope, content, content_hash, embedding, embedding_model, tier
         ) VALUES (
-          ${agentId}, 'private', ${fact}, ${contentHash}, ${JSON.stringify(embedding)}, 'nomic-embed-text-v2-moe', 'permanent'
+          ${agentId}, 'private', ${fact}, ${contentHash}, ${JSON.stringify(embedding)}, 'nomic-embed-text-v2-moe', 'stable'
         ) ON CONFLICT (agent_id, content_hash) DO NOTHING;
       `;
       console.log(`[PHASE 1] -> Saved durable fact: "${fact}"`);
@@ -588,7 +654,7 @@ Do not use markdown formatting.
 
   async function processBatch(batch: CandidatePair[], batchIndexHuman: number): Promise<LinkClassification[]> {
     const pairsDescription = batch
-      .map((p, idx) => `${idx + 1}. [A: ${p.source_type}/${p.source_id}] "${p.source_content}"\n   [B: ${p.target_type}/${p.target_id}] "${p.target_content}" (similarity: ${(p.similarity * 100).toFixed(1)}%)`)
+      .map((p, idx) => `${idx + 1}. [A: ${p.source_type}/${p.source_id}] "${sanitizeEpisodicContent(p.source_content)}"\n   [B: ${p.target_type}/${p.target_id}] "${sanitizeEpisodicContent(p.target_content)}" (similarity: ${(p.similarity * 100).toFixed(1)}%)`)
       .join("\n\n");
 
     const prompt = `${linkSystemPrompt}\n\nClassify the relationships between these pairs:\n\n${pairsDescription}`;
