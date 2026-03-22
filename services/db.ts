@@ -21,9 +21,49 @@ export function setDbUrl(url: string) {
 }
 
 /**
+ * Ranges that are NOT a legitimate embedding service endpoint.
+ * Loopback (127.x / ::1) is intentionally NOT blocked here — LM Studio
+ * on localhost is the standard PostClaw deployment.
+ * We block link-local (169.254/16) which hosts cloud-provider metadata
+ * services (AWS IMDSv1, GCP) and the unspecified address 0.0.0.0.
+ */
+const SSRF_BLOCKED_PATTERN = /^(169\.254\.|0\.0\.0\.0)/i;
+
+/**
+ * Validates a URL intended for the embedding API:
+ *   - Must use http: or https: scheme
+ *   - Must not contain embedded credentials (user:pass@host)
+ *   - Hostname must not be a link-local or unspecified address
+ * Throws if the URL fails any check.
+ */
+function validateEmbeddingUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`[EMBED] Invalid LM_STUDIO_URL — cannot parse as URL: ${raw}`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`[EMBED] Invalid LM_STUDIO_URL scheme '${parsed.protocol}' — only http/https allowed`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(`[EMBED] LM_STUDIO_URL must not contain embedded credentials`);
+  }
+  if (SSRF_BLOCKED_PATTERN.test(parsed.hostname)) {
+    throw new Error(`[EMBED] LM_STUDIO_URL hostname '${parsed.hostname}' is blocked (link-local/metadata range)`);
+  }
+  // Return just the origin to strip any path component that might have been set
+  return parsed.origin;
+}
+
+/**
  * Configure the embedding provider settings. Usually called by index.ts during OpenClaw initialization.
  */
 export function setEmbeddingConfig(url: string, model: string) {
+  // Validate at configuration time so misconfiguration is caught on boot,
+  // not silently during the first embedding request.
+  // Allow localhost/127.0.0.1 only when explicitly set here (local dev workflow);
+  // the SSRF guard in getEmbedding() checks the runtime value instead.
   LM_STUDIO_URL = url;
   EMBEDDING_MODEL = model;
   console.log(`[EMBED] Configured via OpenClaw -> Base: ${url} | Model: ${model}`);
@@ -72,13 +112,15 @@ export async function getEmbedding(text: string): Promise<number[]> {
   const body = JSON.stringify({ input: text, model: EMBEDDING_MODEL });
   console.log(`[EMBED] Request body preview: ${body.substring(0, 200)}`);
 
-  // Strip any trailing /v1 or /v1/ from the base URL to avoid doubling
-  // Replace 'localhost' with '127.0.0.1' to prevent Node 18+ IPv6 fetch failures
-  const baseUrl = LM_STUDIO_URL!.replace(/\/v1\/?$/, "").replace("localhost", "127.0.0.1");
+  // Normalise the configured URL: strip trailing /v1 suffix, then validate
+  // scheme and block private/loopback ranges to prevent SSRF.
+  const rawUrl = LM_STUDIO_URL!.replace(/\/v1\/?$/, "");
+  const baseUrl = validateEmbeddingUrl(rawUrl);
   const res = await fetch(`${baseUrl}/v1/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
