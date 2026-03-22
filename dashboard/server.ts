@@ -83,6 +83,12 @@ export function startDashboard(opts: DashboardOptions = {}): void {
     const url = req.url || "/";
     const pathname = url.split("?")[0];
 
+    // Security headers on every response
+    res.setHeader("Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+
     // API routes — require authentication and agentId validation
     if (pathname.startsWith("/api/")) {
       // -----------------------------------------------------------------------
