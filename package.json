@@ -1,5 +1,5 @@
 {
-  "name": "@christopherlittle51/postclaw",
+  "name": "@rasathus/postclaw",
   "version": "1.3.6",
   "description": "OpenClaw native plugin for PostgreSQL-backed RAG, memory, and persona management",
   "main": "dist/index.js",
