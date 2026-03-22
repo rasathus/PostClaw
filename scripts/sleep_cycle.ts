@@ -91,10 +91,25 @@ const INJECTION_PATTERNS = [
  * Does NOT strip other content — the delimiter approach in the prompt handles
  * instruction/data separation.
  */
+/**
+ * Normalises a string to NFKC (collapses homoglyphs and compatibility
+ * equivalents) then strips zero-width and invisible Unicode characters.
+ * Applied before any security check so pattern matching sees canonical text.
+ */
+function normalizeForSecurity(text: string): string {
+  return text
+    .normalize("NFKC")
+    // Zero-width space, non-joiner, joiner, word-joiner, BOM, soft hyphen,
+    // and the general invisible/format character range U+200B–U+200F / U+FEFF
+    .replace(/[\u00AD\u200B-\u200F\u2028\u2029\uFEFF]/g, "");
+}
+
 function sanitizeEpisodicContent(text: string): string {
+  // Normalise unicode before stripping control characters
+  const normalised = normalizeForSecurity(text);
   // Strip null bytes and ASCII control characters (except tab/newline/CR)
   // eslint-disable-next-line no-control-regex
-  const cleaned = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ").trim();
+  const cleaned = normalised.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ").trim();
   if (cleaned.length <= MAX_EPISODIC_SUMMARY_CHARS) return cleaned;
   return cleaned.slice(0, MAX_EPISODIC_SUMMARY_CHARS) + " [TRUNCATED]";
 }
@@ -102,7 +117,8 @@ function sanitizeEpisodicContent(text: string): string {
 /**
  * Returns true if an LLM-extracted fact is safe to write to the DB.
  * Rejects empty strings, overlong strings, and strings matching known
- * prompt-injection patterns.
+ * prompt-injection patterns (matched against NFKC-normalised text to
+ * prevent homoglyph and zero-width character bypasses).
  */
 function isFactSafe(fact: string): boolean {
   if (!fact || fact.trim().length === 0) return false;
@@ -110,8 +126,9 @@ function isFactSafe(fact: string): boolean {
     console.warn(`[PHASE 1] ⚠️  Rejected oversized extracted fact (${fact.length} chars > ${MAX_FACT_CHARS} limit)`);
     return false;
   }
+  const normalised = normalizeForSecurity(fact);
   for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(fact)) {
+    if (pattern.test(normalised)) {
       console.warn(`[PHASE 1] ⚠️  Rejected fact matching injection pattern (${pattern}): "${fact.substring(0, 80)}..."`);
       return false;
     }
