@@ -12,9 +12,27 @@ import { parseBody, sendJson, sendError } from "../helpers.js";
 import { getSql, getEmbedding } from "../../services/db.js";
 import { ensureAgent, storeMemory } from "../../services/memoryService.js";
 import { callLLMviaAgent } from "../../services/llm.js";
-import { readdir, readFile } from "node:fs/promises";
-import { join, extname } from "node:path";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { join, extname, resolve, sep } from "node:path";
+
+/** Maximum file size accepted by the workspace import endpoint (512 KB). */
+const MAX_IMPORT_FILE_BYTES = 512 * 1024;
 import { z } from "zod";
+/**
+ * Resolves `filename` relative to `workspaceDir`, then verifies via
+ * realpath() that the final path (after symlink resolution) is still
+ * inside `workspaceDir`. Throws if the path escapes the directory.
+ * Also enforces a `.md`-only restriction.
+ */
+async function safeResolvePath(workspaceDir: string, filename: string): Promise<string> {
+  if (!filename.endsWith(".md")) throw new Error("Only .md files are permitted");
+  const joined = join(workspaceDir, filename);
+  const real = await realpath(joined);
+  const base = resolve(workspaceDir) + sep;
+  if (!real.startsWith(base)) throw new Error("Path traversal detected");
+  return real;
+}
+
 import {
   WorkspaceImportSchema,
   PersonaChunkSchema,
@@ -79,12 +97,10 @@ export function registerWorkspaceRoutes(router: Router): void {
 
       const filename = ctx.params.filename;
 
-      // Security: only allow .md files, no path traversal
-      if (!filename.endsWith(".md") || filename.includes("..") || filename.includes("/")) {
-        return sendError(res, 400, "Only .md files allowed, no path traversal");
-      }
+      const safePath = await safeResolvePath(workspaceDir, filename).catch(() => null);
+      if (!safePath) return sendError(res, 400, "Only .md files allowed, no path traversal");
 
-      const content = await readFile(join(workspaceDir, filename), "utf-8");
+      const content = await readFile(safePath, "utf-8");
       sendJson(res, 200, { ok: true, data: { name: filename, content } });
     } catch {
       sendError(res, 404, `File not found in workspace`);
@@ -108,12 +124,15 @@ export function registerWorkspaceRoutes(router: Router): void {
         return sendError(res, 400, "Workspace directory not configured for this agent");
       }
 
-      // Security check
-      if (data.filename.includes("..") || data.filename.includes("/")) {
-        return sendError(res, 400, "No path traversal allowed");
+      const safePath = await safeResolvePath(workspaceDir, data.filename).catch(() => null);
+      if (!safePath) return sendError(res, 400, "Only .md files allowed, no path traversal");
+
+      const fileStats = await stat(safePath);
+      if (fileStats.size > MAX_IMPORT_FILE_BYTES) {
+        return sendError(res, 413, `File too large (${fileStats.size} bytes). Maximum allowed: ${MAX_IMPORT_FILE_BYTES} bytes`);
       }
 
-      const markdownText = await readFile(join(workspaceDir, data.filename), "utf-8");
+      const markdownText = await readFile(safePath, "utf-8");
       await ensureAgent(agentId);
 
       if (data.target === "persona") {
