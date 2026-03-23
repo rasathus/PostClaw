@@ -47,6 +47,10 @@
                 "type": "boolean",
                 "description": "Enable verbose logging of hook events and contexts for debugging",
                 "default": false
+            },
+            "dashboardToken": {
+                "type": "string",
+                "description": "Bearer token required on all /api/* dashboard requests. Auto-generated if omitted."
             }
         }
     },
