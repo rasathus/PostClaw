@@ -20,16 +20,40 @@ let allEdges = [];   // cached for link search
 let shiftLinkState = null; // { sourceNode, line } for shift+drag linking
 
 // =============================================================================
+// AUTH
+// =============================================================================
+
+function getToken() {
+  return sessionStorage.getItem("postclaw-token") || "";
+}
+
+function promptForToken(force = false) {
+  const existing = getToken();
+  if (!force && existing) return;
+  const input = prompt("Enter PostClaw dashboard token:", existing);
+  if (input !== null) {
+    sessionStorage.setItem("postclaw-token", input.trim());
+  }
+}
+
+window.promptForToken = () => promptForToken(true);
+
+// =============================================================================
 // UTILS
 // =============================================================================
 
 async function api(path, opts = {}) {
   const sep = path.includes("?") ? "&" : "?";
   const url = `${API}${path}${sep}agentId=${encodeURIComponent(currentAgent)}`;
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  const headers = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(url, { headers, ...opts });
+  if (res.status === 401) {
+    promptForToken(true);
+    toast("Token updated — please retry.", "warn");
+    return { ok: false, error: "Unauthorised" };
+  }
   return res.json();
 }
 
@@ -1213,6 +1237,7 @@ function initLightSlider() {
 // =============================================================================
 
 async function init() {
+  promptForToken();
   initLightSlider();
   await loadAgents();
   loadPersonas();
