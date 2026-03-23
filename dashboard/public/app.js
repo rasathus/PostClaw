@@ -60,12 +60,16 @@ async function api(path, opts = {}) {
     ...opts,
     headers: { "Content-Type": "application/json", ...authHeaders, ...(opts.headers || {}) },
   };
-  const res = await fetch(url, merged);
-  if (res.status === 401) {
-    showTokenModal(() => location.reload());
-    return { ok: false, error: "Unauthorised — token saved, reloading…" };
+  try {
+    const res = await fetch(url, merged);
+    if (res.status === 401) {
+      showTokenModal(() => location.reload());
+      return { ok: false, error: "Unauthorised — token saved, reloading…" };
+    }
+    return res.json();
+  } catch (err) {
+    return { ok: false, error: err.message || "Network error" };
   }
-  return res.json();
 }
 
 function toast(msg, type = "info") {
@@ -643,18 +647,31 @@ document.getElementById("btn-run-import").addEventListener("click", async () => 
 
   if (!content.trim()) return toast("Paste some content first", "error");
 
-  const res = await api("/api/memories/import", {
-    method: "POST",
-    body: JSON.stringify({ content, source_filename }),
-  });
+  const btn = document.getElementById("btn-run-import");
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "⏳ Importing…";
+  toast("Import started — generating embeddings for each chunk…", "info");
 
-  if (res.ok) {
-    toast(`Imported ${res.data.imported} memories`, "success");
-    document.getElementById("import-form").style.display = "none";
-    document.getElementById("import-content").value = "";
-    loadMemories();
-  } else {
-    toast(res.error || "Import failed", "error");
+  try {
+    const res = await api("/api/memories/import", {
+      method: "POST",
+      body: JSON.stringify({ content, source_filename }),
+    });
+
+    if (res.ok) {
+      toast(`Imported ${res.data.imported} memories`, "success");
+      document.getElementById("import-form").style.display = "none";
+      document.getElementById("import-content").value = "";
+      loadMemories();
+    } else {
+      toast(res.error || "Import failed", "error");
+    }
+  } catch (err) {
+    toast(`Import failed: ${err.message}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
   }
 });
 
@@ -698,6 +715,8 @@ window.importWorkspaceTo = async function (filename, target) {
   const tierPrompt = target === "memory" ? " (tier: stable)" : "";
   if (!confirm(`Import "${filename}" as ${target} entries${tierPrompt}?\n\nThis uses LLM to semantically chunk the file.`)) return;
 
+  const btn = event?.target;
+  if (btn) { btn.disabled = true; btn.textContent = "⏳…"; }
   toast(`Importing ${filename} as ${target}… (LLM processing)`, "info");
 
   const res = await api("/api/workspace-import", {
@@ -712,6 +731,7 @@ window.importWorkspaceTo = async function (filename, target) {
   } else {
     toast(res.error || "Import failed", "error");
   }
+  if (btn) { btn.disabled = false; btn.textContent = `→ ${target.charAt(0).toUpperCase() + target.slice(1)}`; }
 };
 
 // =============================================================================

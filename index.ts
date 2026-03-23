@@ -390,6 +390,7 @@ const openclawPostgresPlugin = {
 
           // Return the fully replaced system prompt
           result.systemPrompt = sysPrompt;
+          if (!result.prependContext) result.prependContext = "";
           console.log(`[PostClaw] ✅ System prompt replaced (${sysPrompt.length} chars)`);
 
           return result;

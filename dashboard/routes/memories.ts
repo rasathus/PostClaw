@@ -278,12 +278,22 @@ export function registerMemoryRoutes(router: Router): void {
       const data = MemoryImportSchema.parse(body);
       await ensureAgent(agentId);
 
-      // Split markdown by headings or double newlines into chunks
-      const chunks = data.content
+      // Split markdown by headings, keeping each heading attached to its body
+      const normalised = data.content.replace(/\r\n?/g, "\n");
+      const chunks = normalised
         .split(/(?=^#{1,3}\s)/m)
-        .flatMap((section) => section.split(/\n{2,}/))
-        .map((s) => s.trim())
-        .filter((s) => s.length > 10);
+        .map((section) => section.trim())
+        .filter((s) => s.length > 10)
+        .flatMap((section) => {
+          // If section has a heading followed by body paragraphs, prefix each paragraph with the heading
+          const match = section.match(/^(#{1,3}\s+.+)\n+([\s\S]*)$/);
+          if (!match || !match[2].trim()) return [section];
+          const heading = match[1];
+          return match[2].split(/\n{2,}/)
+            .map((p) => p.trim())
+            .filter((p) => p.length > 10)
+            .map((p) => `${heading}\n${p}`);
+        });
 
       const results = [];
       for (const chunk of chunks) {
