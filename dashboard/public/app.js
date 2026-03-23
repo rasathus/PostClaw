@@ -27,16 +27,25 @@ function getToken() {
   return sessionStorage.getItem("postclaw-token") || "";
 }
 
-function promptForToken(force = false) {
-  const existing = getToken();
-  if (!force && existing) return;
-  const input = prompt("Enter PostClaw dashboard token:", existing);
-  if (input !== null) {
-    sessionStorage.setItem("postclaw-token", input.trim());
-  }
+function showTokenModal(onSave) {
+  const modal = document.getElementById("token-modal");
+  const input = document.getElementById("token-input");
+  const btn = document.getElementById("token-submit");
+  input.value = getToken();
+  modal.style.display = "flex";
+  input.focus();
+  const save = () => {
+    const val = input.value.trim();
+    if (!val) return;
+    sessionStorage.setItem("postclaw-token", val);
+    modal.style.display = "none";
+    if (onSave) onSave();
+  };
+  btn.onclick = save;
+  input.onkeydown = (e) => { if (e.key === "Enter") save(); };
 }
 
-window.promptForToken = () => promptForToken(true);
+window.promptForToken = () => showTokenModal(() => location.reload());
 
 // =============================================================================
 // UTILS
@@ -45,14 +54,16 @@ window.promptForToken = () => promptForToken(true);
 async function api(path, opts = {}) {
   const sep = path.includes("?") ? "&" : "?";
   const url = `${API}${path}${sep}agentId=${encodeURIComponent(currentAgent)}`;
-  const headers = { "Content-Type": "application/json" };
   const token = getToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(url, { headers, ...opts });
+  const authHeaders = token ? { "Authorization": `Bearer ${token}` } : {};
+  const merged = {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...authHeaders, ...(opts.headers || {}) },
+  };
+  const res = await fetch(url, merged);
   if (res.status === 401) {
-    promptForToken(true);
-    toast("Token updated — please retry.", "warn");
-    return { ok: false, error: "Unauthorised" };
+    showTokenModal(() => location.reload());
+    return { ok: false, error: "Unauthorised — token saved, reloading…" };
   }
   return res.json();
 }
@@ -1237,7 +1248,10 @@ function initLightSlider() {
 // =============================================================================
 
 async function init() {
-  promptForToken();
+  if (!getToken()) {
+    showTokenModal(() => location.reload());
+    return;
+  }
   initLightSlider();
   await loadAgents();
   loadPersonas();
