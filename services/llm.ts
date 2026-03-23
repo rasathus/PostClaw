@@ -7,6 +7,7 @@
  */
 
 import { execFile } from "child_process";
+import { randomUUID } from "node:crypto";
 import { OpenClawAgentResponseSchema } from "../schemas/validation.js";
 
 // ─── LLM via OpenClaw Agent CLI ─────────────────────────────────────────────
@@ -28,7 +29,7 @@ export async function callLLMviaAgent(
   const args = [
     "agent",
     "--agent", agentId,
-    "--session-id", `postclaw-internal-${agentId}`,
+    "--session-id", `postclaw-internal-${randomUUID()}`,
     "--message", taggedPrompt,
     "--json",
   ];
