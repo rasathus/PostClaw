@@ -396,7 +396,7 @@ const openclawPostgresPlugin = {
           return result;
         } catch (err) {
           console.error("[PostClaw] before_prompt_build error:", err);
-          return { systemPrompt: event.prompt };
+          return { systemPrompt: event.prompt, prependContext: "" };
         }
       },
       {
