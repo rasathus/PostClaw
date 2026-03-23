@@ -1,6 +1,26 @@
 import { z } from "zod";
 
 // =============================================================================
+// SHARED HELPERS
+// =============================================================================
+
+/**
+ * Accepts a metadata value that is either already an object/null or a
+ * JSON-encoded string (which postgres.js may return if the stored JSONB
+ * value was itself a JSON string). Parses strings before validation so
+ * the downstream schema always sees a plain object or null.
+ */
+const metadataField = z.preprocess(
+    (val) => {
+        if (typeof val === "string") {
+            try { return JSON.parse(val); } catch { return val; }
+        }
+        return val;
+    },
+    z.record(z.string(), z.any()).optional().nullable(),
+);
+
+// =============================================================================
 // SHARED ENUMS & PRIMITIVES
 // =============================================================================
 
@@ -364,7 +384,7 @@ export const DashboardMemoryCreateSchema = z.object({
     category: z.string().max(50).optional(),
     tier: MemoryTierSchema.default("daily"),
     volatility: VolatilitySchema.default("low"),
-    metadata: z.record(z.string(), z.any()).optional(),
+    metadata: metadataField,
 });
 
 export type DashboardMemoryCreate = z.infer<typeof DashboardMemoryCreateSchema>;
@@ -393,7 +413,7 @@ export const DashboardMemoryUpdateSchema = z.object({
     updated_at: z.coerce.date().optional(),
     expires_at: z.coerce.date().optional().nullable(),
     is_archived: z.boolean().optional(),
-    metadata: z.record(z.string(), z.any()).optional().nullable(),
+    metadata: metadataField,
     superseded_by: z.string().uuid().optional().nullable(),
 });
 
