@@ -222,6 +222,16 @@ const openclawPostgresPlugin = {
     const pluginConfig = api.config?.plugins?.entries?.postclaw?.config;
     const debugLogging = pluginConfig?.debugLogging === true;
 
+    // Agent allowlist — if set, PostClaw hooks only activate for listed agent IDs.
+    // Omitting the config key (or setting to []) means all agents are intercepted.
+    const allowedAgents: string[] | null =
+      Array.isArray(pluginConfig?.allowedAgents) && pluginConfig.allowedAgents.length > 0
+        ? pluginConfig.allowedAgents
+        : null;
+
+    const isAllowedAgent = (agentId: string) =>
+      allowedAgents === null || allowedAgents.includes(agentId);
+
     /** Keys whose values are always redacted from debug output. */
     const REDACTED_KEYS = new Set([
       "sessionId", "sessionKey", "workspaceDir", "content", "prompt",
@@ -304,6 +314,11 @@ const openclawPostgresPlugin = {
           const agentId = ctx.agentId;
           const provider = ctx?.messageProvider ?? "";
           const isHeartbeat = provider === "heartbeat" || provider === "cron";
+
+          // Skip agents not in the allowlist — return passthrough with empty prependContext
+          if (!isAllowedAgent(agentId)) {
+            return { systemPrompt: event.prompt ?? "", prependContext: "" };
+          }
 
           // Lazy-register the agent if not already in the DB
           await ensureAgent(agentId, ctx.workspaceDir);
@@ -726,6 +741,9 @@ Changing content will re-embed the persona for situational matching. Categories 
           const agentId = ctx.agentId;
           const provider = ctx?.messageProvider ?? "";
           const isHeartbeat = provider === "heartbeat" || provider === "cron";
+
+          // Skip agents not in the allowlist
+          if (!isAllowedAgent(agentId)) return;
 
           // Lazy-register the agent if not already in the DB
           await ensureAgent(agentId, ctx.workspaceDir);

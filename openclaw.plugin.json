@@ -51,6 +51,11 @@
             "dashboardToken": {
                 "type": "string",
                 "description": "Bearer token required on all /api/* dashboard requests. Auto-generated if omitted."
+            },
+            "allowedAgents": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Agent IDs that PostClaw hooks will activate for. Omit or set to [] to intercept all agents."
             }
         }
     },
